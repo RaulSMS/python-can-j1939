@@ -76,7 +76,7 @@ class Dm14Query:
         else:
             self.state = QueryState.WAIT_FOR_DM16
             self._ca.unsubscribe(self._parse_dm15)
-            self._ca.subscribe(self._parse_dm16)
+            self._ca.unique_subscribe(self._parse_dm16)
 
     def _send_operation_complete(self) -> None:
         """
@@ -196,7 +196,7 @@ class Dm14Query:
         # assert object_count == self.object_count
         self.mem_data = data[1 : length + 1]
         self._ca.unsubscribe(self._parse_dm16)
-        self._ca.subscribe(self._parse_dm15)
+        self._ca.unique_subscribe(self._parse_dm15)
         self.state = QueryState.WAIT_FOR_OPER_COMPLETE
 
     def _values_to_bytes(self, values: list) -> bytearray:
@@ -256,7 +256,7 @@ class Dm14Query:
         self.signed = signed
         self.return_raw_bytes = return_raw_bytes
         self.command = Command.READ
-        self._ca.subscribe(self._parse_dm15)
+        self._ca.unique_subscribe(self._parse_dm15)
         self._send_dm14(self.user_level)
         self.state = QueryState.WAIT_FOR_SEED
         # wait for operation completed DM15 message
@@ -302,7 +302,7 @@ class Dm14Query:
         self.command = Command.WRITE
         self.bytes = self._values_to_bytes(values)
         self.object_count = len(values)
-        self._ca.subscribe(self._parse_dm15)
+        self._ca.unique_subscribe(self._parse_dm15)
         self._send_dm14(self.user_level)
         self.state = QueryState.WAIT_FOR_SEED
         # wait for operation completed DM15 message

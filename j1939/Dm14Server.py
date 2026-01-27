@@ -44,7 +44,7 @@ class DM14Server:
         Determines whether to send data or wait to receive data based on the command type.
         If the command is a read command, then the data requested is sent.
         """
-        self._ca.subscribe(self._parse_dm16)
+        self._ca.unique_subscribe(self._parse_dm16)
         self._send_dm15(
             self.length,
             self.direct,
@@ -66,7 +66,7 @@ class DM14Server:
             if (len(self.data)) <= 8:
                 self.proceed = True
                 self.state = ResponseState.SEND_OPERATION_COMPLETE
-                self._ca.subscribe(self.parse_dm14)
+                self._ca.unique_subscribe(self.parse_dm14)
                 self._send_dm15(
                     self.length,
                     self.direct,
@@ -238,7 +238,7 @@ class DM14Server:
 
         data.extend([0xFF] * (self.length - byte_count - 1))
         if byte_count > 8:
-            self._ca.subscribe(self._parse_dm16)
+            self._ca.unique_subscribe(self._parse_dm16)
         self._ca.send_pgn(0, (self._pgn >> 8) & 0xFF, self.sa & 0xFF, 7, data)
 
     def _parse_dm16(
@@ -259,7 +259,7 @@ class DM14Server:
         length = min(data[0], len(data) - 1)
         self.data_queue.put(data[1 : length + 1])
         self._ca.unsubscribe(self._parse_dm16)
-        self._ca.subscribe(self.parse_dm14)
+        self._ca.unique_subscribe(self.parse_dm14)
         self.state = ResponseState.SEND_OPERATION_COMPLETE
         self._send_dm15(
             self.length,
