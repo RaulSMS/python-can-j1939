@@ -76,7 +76,7 @@ class ControllerApplication:
             Function to call when message is received.
         """
         self._ecu.subscribe(callback, self.message_acceptable)
-        
+
     def unsubscribe(self, callback):
         """Stop listening for message.
         :param callback:
