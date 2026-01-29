@@ -222,7 +222,7 @@ def test_dm14_read(feeder, expected_messages):
     :param feeder: can message feeder
     :param expected_messages: list of expected messages
     """
-    feeder.can_messages = expected_messages
+    feeder.can_messages = list(expected_messages)
     feeder.pdus_from_messages()
 
     ca = feeder.accept_all_messages(
@@ -233,6 +233,11 @@ def test_dm14_read(feeder, expected_messages):
 
     if expected_messages == read_with_seed_key:
         dm14.set_seed_key_algorithm(key_from_seed)
+
+    dm14.read(0xD4, 1, 0x92000003, 1)
+
+    feeder.process_messages()
+    feeder.can_messages = list(expected_messages)
 
     dm14.read(0xD4, 1, 0x92000003, 1)
 
@@ -410,7 +415,7 @@ def test_dm14_request_write(feeder, expected_messages):
     :param feeder: can message feeder
     :param expected_messages: list of expected messages
     """
-    feeder.can_messages = expected_messages
+    feeder.can_messages = list(expected_messages)
     feeder.pdus_from_messages()
     ca = feeder.accept_all_messages(
         device_address_preferred=0xD4, bypass_address_claim=True
@@ -434,6 +439,24 @@ def test_dm14_request_write(feeder, expected_messages):
         dm14.set_seed_key_algorithm(key_from_seed)
         dm14.set_verify_key(verify_key)
     values = 0x11223344
+    while flag is False:
+        pass
+    reset_flag()
+    test = dm14.respond(True, [], 0xFFFF, 0xFF)
+    assert values == int.from_bytes(test, byteorder="little", signed=False)
+
+    feeder.process_messages()
+
+    feeder.can_messages = list(expected_messages)
+
+    ca.send_pgn(
+        0,
+        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
+        0xF9 & 0xFF,
+        6,
+        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
+    )
+
     while flag is False:
         pass
     reset_flag()

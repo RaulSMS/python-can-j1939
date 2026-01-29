@@ -200,3 +200,25 @@ def test_add_bus_filters(feeder):
     ]
     feeder.ecu.add_bus_filters(filters)
     assert feeder.ecu._bus.filters == filters
+
+def test_subscribe(feeder):
+    """
+    Test subscribing to callback
+    """
+    call_count = 0
+
+    def callback(priority: int, pgn: int, sa: int, timestamp: int, data: bytearray):
+        nonlocal call_count
+        call_count += 1
+
+    feeder.ecu.subscribe(callback)
+    
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, 0x00FEB201, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),
+    ]
+
+    feeder.pdus = [(Feeder.MsgType.PDU, 65202, [1, 2, 3, 4, 5, 6, 7, 8])]
+
+    feeder.receive()
+
+    assert call_count == 1

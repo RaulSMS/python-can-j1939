@@ -374,7 +374,10 @@ class ElectronicControlUnit:
         logger.debug("notify subscribers for PGN {}".format(pgn))
         # notify only the CA for which the message is intended
         # each CA receives all broadcast messages
-        for dic in self._subscribers:
+
+        # TODO: this is ineffecient but there exists a possibility of removing subscribers during callback
+        # and adding new ones in while this is going and it can impact message receivement
+        for dic in self._subscribers.copy():
             if (dic['dev_adr'] == None) or (dest == ParameterGroupNumber.Address.GLOBAL) or (callable(dic['dev_adr']) and dic['dev_adr'](dest)) or (dest == dic['dev_adr']):
                 dic['cb'](priority, pgn, sa, timestamp, data)
 

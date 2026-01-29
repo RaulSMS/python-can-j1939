@@ -45,6 +45,33 @@ class Dm14Query:
         self.exception_queue = queue.Queue()
         self.user_level = user_level
 
+    def unsubscribe_all(self) -> None:
+        """
+        Unsubscribes all message handlers
+        """
+        self._ca.unsubscribe(self._parse_dm15)
+        self._ca.unsubscribe(self._parse_dm16)
+        
+    def reset_query(self) -> None:
+        """
+        Resets query to remove transaction specific data
+        """
+        self.state = QueryState.IDLE
+        self._dest_address = None
+        self.address = None
+        self.object_count = 0
+        self.object_byte_size = 1
+        self.signed = False
+        self.return_raw_bytes = False
+        self.direct = 0
+        self.command = None
+        self.bytes = bytearray()
+        self.mem_data = None
+        self.data_queue = queue.Queue()
+        self.exception_queue = queue.Queue()
+        self.unsubscribe_all()
+
+
     def _wait_for_data(self) -> None:
         """
         Determines whether to send data or wait to receive data based on the command type. If the command is a write command, then the data is sent.
