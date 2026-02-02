@@ -68,7 +68,7 @@ def test_addr_claim_fixed_reduced_time(feeder):
         identity_number=1234567,
     )
     new_ca = feeder.ecu.add_ca(name=name, device_address=128)
-    new_ca.start(0.25)
+    new_ca.start(0.2)
     
     # wait until all messages are processed asynchronously 
     # rounded up to account for scheduling delays
