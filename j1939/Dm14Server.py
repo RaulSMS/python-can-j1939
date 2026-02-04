@@ -255,6 +255,7 @@ class DM14Server:
 
         if pgn != j1939.ParameterGroupNumber.PGN.DM16 or sa != self.sa:
             return
+
         length = min(data[0], len(data) - 1)
         self.data_queue.put(data[1 : length + 1])
         self._ca.unsubscribe(self._parse_dm16)
@@ -390,5 +391,9 @@ class DM14Server:
         self._wait_for_data()
         mem_data = None
         if self.state == ResponseState.WAIT_FOR_DM16:
-            mem_data = self.data_queue.get(block=True, timeout=max_timeout)
+            try:
+                mem_data = self.data_queue.get(block=True, timeout=max_timeout)
+            except queue.Empty:
+                self.reset_server()
+                raise RuntimeError("No data received from DM16 within timeout period")
         return mem_data

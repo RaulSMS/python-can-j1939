@@ -1,8 +1,8 @@
 import pytest
 from test_helpers.feeder import Feeder
 from test_helpers.conftest import feeder
-import queue
 import j1939
+import time
 
 # fmt: off
 read_with_seed_key = [
@@ -255,7 +255,7 @@ def test_dm14_write(feeder, expected_messages):
     :param feeder: can message feeder
     :param expected_messages: list of expected messages
     """
-    feeder.can_messages = expected_messages
+    feeder.can_messages = list(expected_messages)
     feeder.pdus_from_messages()
 
     ca = feeder.accept_all_messages(
@@ -277,7 +277,7 @@ def test_dm14_read_busy(
     Tests the DM14 read query response to receiving another request
     :param feeder: can message feeder
     """
-    feeder.can_messages = read_with_seed_key_busy
+    feeder.can_messages = list(read_with_seed_key_busy)
     feeder.pdus_from_messages()
 
     ca = feeder.accept_all_messages(
@@ -304,18 +304,12 @@ def test_dm14_request_read(feeder, expected_messages):
     :param feeder: can message feeder
     :param expected_messages: list of expected messages
     """
-    feeder.can_messages = expected_messages
+    feeder.can_messages = list(expected_messages)
     feeder.pdus_from_messages()
     ca = feeder.accept_all_messages(
         device_address_preferred=0xD4, bypass_address_claim=True
     )
-    ca.send_pgn(
-        0,
-        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
-        0xF9 & 0xFF,
-        6,
-        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
-    )
+
     global flag
 
     dm14 = j1939.MemoryAccess(ca)
@@ -326,8 +320,18 @@ def test_dm14_request_read(feeder, expected_messages):
     if expected_messages == request_read_with_seed:
         dm14.set_seed_key_algorithm(key_from_seed)
 
-    while flag is False:
+    ca.send_pgn(
+        0,
+        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
+        0xF9 & 0xFF,
+        6,
+        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
+    )
+    timeout = 5.0
+    start = time.monotonic()
+    while flag is False and (time.monotonic() - start) < timeout:
         pass
+    assert flag is True, "Timeout waiting for DM14 request"
     reset_flag()
     dm14.respond(True, [0x01], 0xFFFF, 0xFF)
 
@@ -339,18 +343,12 @@ def test_dm14_request_read_busy(feeder):
     Tests the DM14 response to read query function while being busy responding to a read query response
     :param feeder: can message feeder
     """
-    feeder.can_messages = request_read_with_seed_busy
+    feeder.can_messages = list(request_read_with_seed_busy)
     feeder.pdus_from_messages()
     ca = feeder.accept_all_messages(
         device_address_preferred=0xD4, bypass_address_claim=True
     )
-    ca.send_pgn(
-        0,
-        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
-        0xF9 & 0xFF,
-        6,
-        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
-    )
+
     global flag
 
     dm14 = j1939.MemoryAccess(ca)
@@ -360,8 +358,19 @@ def test_dm14_request_read_busy(feeder):
     dm14.set_proceed(proceed)
     dm14.set_seed_key_algorithm(key_from_seed)
 
-    while flag is False:
+    ca.send_pgn(
+        0,
+        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
+        0xF9 & 0xFF,
+        6,
+        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
+    )
+
+    timeout = 5.0
+    start = time.monotonic()
+    while flag is False and (time.monotonic() - start) < timeout:
         pass
+    assert flag is True, "Timeout waiting for DM14 request"
 
     reset_flag()
     dm14.respond(True, [0x01], 0xFFFF, 0xFF)
@@ -374,18 +383,12 @@ def test_dm14_busy_diff_addr(feeder):
     Tests the DM14 response to read query function from different source address while being busy responding to a read query response
     :param feeder: can message feeder
     """
-    feeder.can_messages = receive_diff_sa_busy
+    feeder.can_messages = list(receive_diff_sa_busy)
     feeder.pdus_from_messages()
     ca = feeder.accept_all_messages(
         device_address_preferred=0xD4, bypass_address_claim=True
     )
-    ca.send_pgn(
-        0,
-        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
-        0xF9 & 0xFF,
-        6,
-        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
-    )
+
     global flag
 
     dm14 = j1939.MemoryAccess(ca)
@@ -395,8 +398,19 @@ def test_dm14_busy_diff_addr(feeder):
     dm14.set_proceed(proceed)
     dm14.set_seed_key_algorithm(key_from_seed)
 
-    while flag is False:
+    ca.send_pgn(
+        0,
+        (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
+        0xF9 & 0xFF,
+        6,
+        [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
+    )
+
+    timeout = 5.0
+    start = time.monotonic()
+    while flag is False and (time.monotonic() - start) < timeout:
         pass
+    assert flag is True, "Timeout waiting for DM14 request"
 
     reset_flag()
     dm14.respond(True, [0x01], 0xFFFF, 0xFF)
@@ -420,6 +434,19 @@ def test_dm14_request_write(feeder, expected_messages):
     ca = feeder.accept_all_messages(
         device_address_preferred=0xD4, bypass_address_claim=True
     )
+
+    global flag
+
+    dm14 = j1939.MemoryAccess(ca)
+
+    if expected_messages == request_write_with_seed:
+        dm14.set_seed_key_algorithm(key_from_seed)
+        dm14.set_verify_key(verify_key)
+
+    dm14.set_seed_generator(generate_seed)
+    dm14.set_proceed(proceed)
+    dm14.set_notify(global_flag)
+
     ca.send_pgn(
         0,
         (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
@@ -428,19 +455,12 @@ def test_dm14_request_write(feeder, expected_messages):
         [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
     )
 
-    global flag
-
-    dm14 = j1939.MemoryAccess(ca)
-    dm14.set_seed_generator(generate_seed)
-    dm14.set_proceed(proceed)
-    dm14.set_notify(global_flag)
-
-    if expected_messages == request_write_with_seed:
-        dm14.set_seed_key_algorithm(key_from_seed)
-        dm14.set_verify_key(verify_key)
     values = 0x11223344
-    while flag is False:
+    timeout = 5.0
+    start = time.monotonic()
+    while flag is False and (time.monotonic() - start) < timeout:
         pass
+    assert flag is True, "Timeout waiting for DM14 request"
     reset_flag()
     test = dm14.respond(True, [], 0xFFFF, 0xFF)
     assert values == int.from_bytes(test, byteorder="little", signed=False)
@@ -457,9 +477,13 @@ def test_dm14_request_write(feeder, expected_messages):
         [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
     )
 
-    while flag is False:
+    timeout = 5.0
+    start = time.monotonic()
+    while flag is False and (time.monotonic() - start) < timeout:
         pass
+    assert flag is True, "Timeout waiting for DM14 request"
     reset_flag()
+
     test = dm14.respond(True, [], 0xFFFF, 0xFF)
     assert values == int.from_bytes(test, byteorder="little", signed=False)
 
@@ -471,12 +495,19 @@ def test_dm14_request_write_timeout(feeder):
     Tests the DM14 response to write query function timeout waiting for a DM16 response
     :param feeder: can message feeder
     """
-    with pytest.raises(queue.Empty) as excinfo:
-        feeder.can_messages = request_write_no_seed_timeout
+    with pytest.raises(RuntimeError) as excinfo:
+        feeder.can_messages = list(request_write_no_seed_timeout)
         feeder.pdus_from_messages()
         ca = feeder.accept_all_messages(
             device_address_preferred=0xD4, bypass_address_claim=True
         )
+        global flag
+
+        dm14 = j1939.MemoryAccess(ca)
+        dm14.set_seed_generator(generate_seed)
+        dm14.set_proceed(proceed)
+        dm14.set_notify(global_flag)
+
         ca.send_pgn(
             0,
             (j1939.ParameterGroupNumber.PGN.DM14 >> 8) & 0xFF,
@@ -485,19 +516,14 @@ def test_dm14_request_write_timeout(feeder):
             [0x01, 0x13, 0x03, 0x00, 0x00, 0x92, 0x07, 0x00],
         )
 
-        global flag
-
-        dm14 = j1939.MemoryAccess(ca)
-        dm14.set_seed_generator(generate_seed)
-        dm14.set_proceed(proceed)
-        dm14.set_notify(global_flag)
-
-        values = 0x11223344
-        while flag is False:
+        timeout = 5.0
+        start = time.monotonic()
+        while flag is False and (time.monotonic() - start) < timeout:
             pass
+        assert flag is True, "Timeout waiting for DM14 request"
         reset_flag()
-        test = dm14.respond(True, [], 0xFFFF, 0xFF)
-
+        dm14.respond(True, [], 0xFFFF, 0xFF)
+        assert str(excinfo.value) is "No response received for DM16 data transfer"
     feeder.process_messages()
 
 
@@ -718,7 +744,7 @@ def test_dm14_read_error_response(feeder, expected_messages):
     :param expected_messages: list of expected messages
     """
     with pytest.raises(RuntimeError) as excinfo:
-        feeder.can_messages = expected_messages
+        feeder.can_messages = list(expected_messages)
         feeder.pdus_from_messages()
         ca = feeder.accept_all_messages(
             device_address_preferred=0xF9, bypass_address_claim=True
@@ -744,7 +770,7 @@ def test_dm14_write_error_response(feeder, expected_messages):
     :param expected_messages: list of expected messages
     """
     with pytest.raises(RuntimeError) as excinfo:
-        feeder.can_messages = expected_messages
+        feeder.can_messages = list(expected_messages)
         feeder.pdus_from_messages()
         ca = feeder.accept_all_messages(
             device_address_preferred=0xF9, bypass_address_claim=True

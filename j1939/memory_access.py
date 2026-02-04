@@ -1,6 +1,7 @@
 from enum import Enum
+import threading
+import time
 import j1939
-
 
 class DMState(Enum):
     IDLE = 1
@@ -20,11 +21,37 @@ class MemoryAccess:
         self._ca = ca
         self.query = j1939.Dm14Query(ca)
         self.server = j1939.DM14Server(ca)
+        self.proceed = False
         self._ca.subscribe(self._listen_for_dm14)
         self.state = DMState.IDLE
         self.seed_security = False
         self._notify_query_received = None
         self._proceed_function = None
+
+        self._job_thread_end = threading.Event()
+        self._job_thread = threading.Thread(target=self._servicer, name='j1939.memory_access servicer_thread')
+        # A thread can be flagged as a "daemon thread". The significance of
+        # this flag is that the entire Python program exits when only daemon
+        # threads are left.
+        self._job_thread.daemon = True
+        self._job_thread.start()
+
+    def __del__(self):
+        self._job_thread_end.set()
+        if self._job_thread.is_alive():
+            self._job_thread.join()
+
+    def _servicer(self):
+        """
+        Job thread to service memory access requests
+        """
+        while not self._job_thread_end.is_set():
+            if (self.state == DMState.WAIT_RESPONSE) and self.proceed:
+                self.proceed = False
+                if self._notify_query_received is not None:
+                    self._notify_query_received()  # notify incoming request
+            time.sleep(0.001)  # Add a small delay to yield control to other threads
+
 
     def _handle_error(self, priority: int, pgn: int, sa: int, timestamp: int, data: bytearray, error_code: int) -> None:
         """
@@ -82,10 +109,10 @@ class MemoryAccess:
                                     self.server.access_level,
                                     0x0,  # placeholder for seed
                                 )  # call proceed function and pass in basic parameters
-                                if self.proceed:
-                                    self._notify_query_received()  # notify incoming request
-                                else:
+                                if not self.proceed:
                                     self._handle_error(priority, pgn, sa, timestamp, data, 0x100)
+                            else:
+                                self.proceed = True  # no security, so always proceed
 
                 case DMState.REQUEST_STARTED:
                     self.server.parse_dm14(priority, pgn, sa, timestamp, data)
@@ -111,10 +138,10 @@ class MemoryAccess:
                                         self.server.access_level,
                                         self.server.seed,
                                     )  # call proceed function and pass in basic parameters
-                                    if self.proceed:
-                                        self._notify_query_received()  # notify incoming request
-                                    else:
+                                    if not self.proceed:
                                         self._handle_error(priority, pgn, sa, timestamp, data, 0x100)
+                                else:
+                                    self.proceed = True  # no proceed function, so always proceed
                             else:
                                 self._handle_error(priority, pgn, sa, timestamp, data, 0x1003)
 
@@ -122,6 +149,7 @@ class MemoryAccess:
                     self.server.set_busy(True)
                     self.server.parse_dm14(priority, pgn, sa, timestamp, data)
                     self.server.set_busy(False)
+
                 case DMState.SERVER_CLEANUP:
                     self.state = DMState.IDLE
                 case _:
@@ -150,6 +178,7 @@ class MemoryAccess:
         if self.state is not DMState.WAIT_RESPONSE:
             return data
         
+        self.proceed = False
         self._ca.unsubscribe(self._listen_for_dm14)
         return_data = self.server.respond(proceed, data, error, edcp, max_timeout)
         self.state = DMState.SERVER_CLEANUP if self.server.state.value != DMState.IDLE.value else DMState.IDLE
@@ -275,3 +304,4 @@ class MemoryAccess:
         self._ca.subscribe(self._listen_for_dm14)
         self.server.reset_server()
         self.query.reset_query()
+        self.proceed = False
