@@ -13,8 +13,6 @@ from test_helpers.conftest import feeder
 class TestChunkingAlgorithm:
     """Isolated tests for the data chunking algorithm."""
     
-    _CHUNK_SIZE = 60  # J1939_22.DataLength.TP
-    
     @staticmethod
     def chunk_data(data, chunk_size):
         """Pure-Python chunking implementation matching j1939_22.py:send_pgn()"""
@@ -22,18 +20,18 @@ class TestChunkingAlgorithm:
         return [list(data[i:i + chunk_size]) for i in range(0, data_length, chunk_size)]
     
     @pytest.mark.parametrize("data_length,expected_chunks,expected_last_chunk_size", [
-        (60, 1, 60),    # Exact single chunk
-        (61, 2, 1),     # Single byte remainder
-        (119, 2, 59),   # Large remainder
-        (120, 2, 60),   # Exact two chunks
-        (121, 3, 1),    # Two chunks + 1 byte
-        (180, 3, 60),   # Exact three chunks
-        (181, 4, 1),    # Three chunks + 1 byte
+        (60, 1, 60),
+        (61, 2, 1),
+        (119, 2, 59),
+        (120, 2, 60),
+        (121, 3, 1),
+        (180, 3, 60),
+        (181, 4, 1),
     ])
     def test_chunk_sizes(self, data_length, expected_chunks, expected_last_chunk_size):
         """Verify correct chunk count and sizes for various data lengths."""
         data = list(range(data_length))
-        result = self.chunk_data(data, self._CHUNK_SIZE)
+        result = self.chunk_data(data, J1939_22.DataLength.TP)
         
         assert len(result) == expected_chunks
         assert len(result[-1]) == expected_last_chunk_size
@@ -41,7 +39,7 @@ class TestChunkingAlgorithm:
     def test_data_integrity(self):
         """All original bytes are present after chunking, in correct order."""
         data = list(range(2560))  # Large data set: 43 chunks
-        result = self.chunk_data(data, self._CHUNK_SIZE)
+        result = self.chunk_data(data, J1939_22.DataLength.TP)
         
         # Verify chunk count
         expected_chunks = 2560 // 60 + (1 if 2560 % 60 else 0)
@@ -58,10 +56,10 @@ class TestChunkingAlgorithm:
         for data_length in [60, 61, 119, 120, 121, 180, 500, 1000]:
             data = [i % 256 for i in range(data_length)]
             
-            result = self.chunk_data(data, self._CHUNK_SIZE)
+            result = self.chunk_data(data, J1939_22.DataLength.TP)
             
             # Formula from j1939_22.py
-            expected = int(data_length / self._CHUNK_SIZE) + ((data_length % self._CHUNK_SIZE) != 0)
+            expected = int(data_length / J1939_22.DataLength.TP) + ((data_length % J1939_22.DataLength.TP) != 0)
             
             assert len(result) == expected, f"data_length={data_length}"
 
