@@ -11,8 +11,6 @@ on:
     tags:
       - v*
   pull_request:
-    branches:
-      - "**"
   schedule:
     # Daily at 10:55
     - cron: '55 10 * * *'
