@@ -166,3 +166,8 @@ class Feeder:
             logger.exception("Feeder.stop: ecu.stop() failed")
         self.message_queue.put(self.STOP_THREAD)
         self.message_thread.join(timeout=2.0)
+        if self.message_thread.is_alive():
+            raise RuntimeError(
+                "Feeder thread did not exit within timeout; "
+                "possible thread leak or blocked _async_can_feeder"
+            )
