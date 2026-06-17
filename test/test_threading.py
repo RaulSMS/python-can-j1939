@@ -14,6 +14,7 @@ import time
 import pytest
 
 import j1939
+from j1939.parameter_group_number import ParameterGroupNumber
 from test_helpers.feeder import Feeder
 
 
@@ -431,6 +432,82 @@ def test_register_dependent_rejected_during_shutdown():
 
     assert captured, "Expected RuntimeError when registering during shutdown"
     assert log == ['blocker']
+
+
+def test_send_pgn_concurrent_no_crash():
+    """Concurrent send_pgn calls while the protocol thread is running must not
+    raise RuntimeError (dictionary changed size during iteration) or corrupt
+    _snd_buffer. Regression test for the missing _buffer_lock in j1939_21
+    send_pgn."""
+    sent = []
+    errors = []
+
+    def capture_send(can_id, extended, data, fd_format=False):
+        sent.append(can_id)
+
+    ecu = j1939.ElectronicControlUnit(send_message=capture_send)
+
+    def spam_send_pgn():
+        try:
+            deadline = time.monotonic() + 0.5
+            src = 0x01
+            dst = ParameterGroupNumber.Address.GLOBAL
+            payload = list(range(20))  # >8 bytes → TP path
+            while time.monotonic() < deadline:
+                ecu.send_pgn(0, 0xFE, dst, 6, src, payload)
+                time.sleep(0.001)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=spam_send_pgn) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=2.0)
+        assert not t.is_alive(), "send_pgn stress thread deadlocked"
+
+    ecu.stop()
+
+    assert not errors, f"Exceptions during concurrent send_pgn: {errors}"
+
+
+def test_send_pgn_j1939_21_buffer_lock_no_race():
+    """send_pgn check-then-write on _snd_buffer must be atomic: two threads
+    sending to the same src/dst pair must not both succeed and overwrite each
+    other's buffer entry."""
+    results = []
+    errors = []
+
+    def capture_send(can_id, extended, data, fd_format=False):
+        pass
+
+    ecu = j1939.ElectronicControlUnit(send_message=capture_send)
+
+    barrier = threading.Barrier(2)
+
+    def send_once():
+        try:
+            barrier.wait()  # start both threads simultaneously
+            result = ecu.send_pgn(0, 0xFE, ParameterGroupNumber.Address.GLOBAL,
+                                  6, 0x01, list(range(20)))
+            results.append(result)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=send_once) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=2.0)
+
+    ecu.stop()
+
+    assert not errors, f"Exceptions: {errors}"
+    # Exactly one should succeed (True) and one should be rejected (False)
+    # because both target the same src/dst hash.
+    assert sorted(results) == [False, True], (
+        f"Expected one success and one rejection, got: {results}"
+    )
 
 
 def test_dependent_registration_stress_no_leak():

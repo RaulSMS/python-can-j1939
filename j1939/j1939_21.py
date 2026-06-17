@@ -111,48 +111,58 @@ class J1939_21:
             # init sequence
             # known limitation: only one BAM can be sent in parallel to a destination node
             buffer_hash = self._buffer_hash(src_address, dest_address)
-            if buffer_hash in self._snd_buffer:
-                # There is already a sequence active for this pair
-                return False
             message_size = len(data)
             num_packets = int(message_size / 7) if (message_size % 7 == 0) else int(message_size / 7) + 1
 
             # if the PF is between 240 and 255, the message can only be broadcast
             if dest_address == ParameterGroupNumber.Address.GLOBAL:
-                # send BAM
+                # send BAM before acquiring the lock — CAN I/O must not be
+                # held under _buffer_lock to avoid priority inversion with the
+                # protocol thread.
+                with self._buffer_lock:
+                    if buffer_hash in self._snd_buffer:
+                        # There is already a sequence active for this pair
+                        return False
                 self.__send_tp_bam(src_address, priority, pgn.value, message_size, num_packets)
 
                 # init new buffer for this connection
-                self._snd_buffer[buffer_hash] = {
-                        "pgn": pgn.value,
-                        "priority": priority,
-                        "message_size": message_size,
-                        "num_packages": num_packets,
-                        "data": data,
-                        "state": self.SendBufferState.SENDING_BM,
-                        "deadline": time.monotonic() + self._minimum_tp_bam_dt_interval,
-                        'src_address' : src_address,
-                        'dest_address' : ParameterGroupNumber.Address.GLOBAL,
-                        'next_packet_to_send' : 0,
-                    }
+                with self._buffer_lock:
+                    self._snd_buffer[buffer_hash] = {
+                            "pgn": pgn.value,
+                            "priority": priority,
+                            "message_size": message_size,
+                            "num_packages": num_packets,
+                            "data": data,
+                            "state": self.SendBufferState.SENDING_BM,
+                            "deadline": time.monotonic() + self._minimum_tp_bam_dt_interval,
+                            'src_address' : src_address,
+                            'dest_address' : ParameterGroupNumber.Address.GLOBAL,
+                            'next_packet_to_send' : 0,
+                        }
             else:
                 # send RTS/CTS
                 pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
-                # init new buffer for this connection
-                self._snd_buffer[buffer_hash] = {
-                        "pgn": pgn.value,
-                        "priority": priority,
-                        "message_size": message_size,
-                        "num_packages": num_packets,
-                        "data": data,
-                        "state": self.SendBufferState.WAITING_CTS,
-                        "deadline": time.monotonic() + self.Timeout.T3,
-                        'src_address' : src_address,
-                        'dest_address' : pdu_specific,
-                        'next_packet_to_send' : 0,
-                        'next_wait_on_cts': 0,
-                    }
+                with self._buffer_lock:
+                    if buffer_hash in self._snd_buffer:
+                        # There is already a sequence active for this pair
+                        return False
                 self.__send_tp_rts(src_address, pdu_specific, priority, pgn.value, message_size, num_packets, min(self._max_cmdt_packets, num_packets))
+
+                # init new buffer for this connection
+                with self._buffer_lock:
+                    self._snd_buffer[buffer_hash] = {
+                            "pgn": pgn.value,
+                            "priority": priority,
+                            "message_size": message_size,
+                            "num_packages": num_packets,
+                            "data": data,
+                            "state": self.SendBufferState.WAITING_CTS,
+                            "deadline": time.monotonic() + self.Timeout.T3,
+                            'src_address' : src_address,
+                            'dest_address' : pdu_specific,
+                            'next_packet_to_send' : 0,
+                            'next_wait_on_cts': 0,
+                        }
 
             self.__job_thread_wakeup()
 
