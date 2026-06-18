@@ -180,3 +180,27 @@ def test_stop_method(feeder):
     assert new_ca.started
     new_ca.stop()
     assert not new_ca.started
+
+
+def test_bypass_address_claim_with_address_zero(feeder):
+    """bypass_address_claim=True with device_address_preferred=0x00 must reach State.NORMAL.
+
+    Address 0x00 (engine controller / ECM) is valid but falsy in Python.
+    A truthiness check on the address silently skips the bypass, leaving the
+    CA in State.NONE and causing RuntimeError on the first send. Regression
+    test for issue #8.
+    """
+    name = j1939.Name(
+        arbitrary_address_capable=0,
+        industry_group=j1939.Name.IndustryGroup.Global,
+        vehicle_system_instance=0,
+        vehicle_system=0,
+        function=0,
+        function_instance=0,
+        ecu_instance=0,
+        manufacturer_code=0,
+        identity_number=0,
+    )
+    ca = j1939.ControllerApplication(name=name, device_address_preferred=0x00, bypass_address_claim=True)
+    assert ca.state == j1939.ControllerApplication.State.NORMAL
+    assert ca.device_address == 0x00
