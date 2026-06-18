@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages, Extension
+from setuptools import setup, find_packages
 
 exec(open('j1939/version.py').read())
 
@@ -9,7 +9,7 @@ description = description.replace("/latest/", "/stable/")
 setup(
     name="can-j1939",
     url="https://github.com/juergenH87/python-can-j1939",
-    version=__version__,
+    version=__version__,  # noqa: F821 — loaded via exec() above
     packages=find_packages(exclude=['docs', 'examples']),
     author="Juergen Heilgemeir",
     description="SAE J1939 stack implementation",
