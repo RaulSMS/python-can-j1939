@@ -41,8 +41,13 @@ class Feeder:
     def __init__(self):
         self.STOP_THREAD = object()
 
+        self._stopped = False
         self.message_queue = queue.Queue()
-        self.message_thread = threading.Thread(target=self._async_can_feeder)
+        self.message_thread = threading.Thread(
+            target=self._async_can_feeder, name='j1939.test feeder_thread')
+        # Daemon so a stray feeder cannot prevent interpreter exit if a test
+        # forgets to call stop().
+        self.message_thread.daemon = True
         self.message_thread.start()
         # redirect the send_message from the can bus to our simulation
         self.ecu = j1939.ElectronicControlUnit(send_message=self._send_message)
@@ -56,7 +61,15 @@ class Feeder:
             recv_time = message[3]
             if recv_time == 0.0:
                 recv_time = time.time()
-            self.ecu.notify(message[1], message[2], recv_time)
+            try:
+                self.ecu.notify(message[1], message[2], recv_time)
+            except Exception:
+                # An assertion failure inside a subscriber callback (e.g.
+                # Feeder._on_message) must not kill the feeder thread
+                # silently — that previously produced
+                # PytestUnhandledThreadExceptionWarning and left the feeder
+                # unable to process further messages. Log and continue.
+                logger.exception("Feeder _async_can_feeder: notify failed")
 
     def _inject_messages_into_ecu(self):
         while self.can_messages and self.can_messages[0][0] == Feeder.MsgType.CANRX:
@@ -144,6 +157,17 @@ class Feeder:
         self.ecu.unsubscribe(self._on_message)
 
     def stop(self):
-        self.ecu.stop()
+        if self._stopped:
+            return
+        self._stopped = True
+        try:
+            self.ecu.stop()
+        except Exception:
+            logger.exception("Feeder.stop: ecu.stop() failed")
         self.message_queue.put(self.STOP_THREAD)
-        self.message_thread.join()
+        self.message_thread.join(timeout=2.0)
+        if self.message_thread.is_alive():
+            raise RuntimeError(
+                "Feeder thread did not exit within timeout; "
+                "possible thread leak or blocked _async_can_feeder"
+            )

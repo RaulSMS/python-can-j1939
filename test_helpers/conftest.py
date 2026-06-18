@@ -4,8 +4,13 @@ from test_helpers.feeder import Feeder
 
 @pytest.fixture()
 def feeder():
-    #setup
+    # setup
     feeder = Feeder()
-    yield feeder
-    #teardown
-    feeder.stop()
+    try:
+        yield feeder
+    finally:
+        # teardown — guarantee cleanup even if the test raises
+        try:
+            feeder.stop()
+        except Exception:
+            pass

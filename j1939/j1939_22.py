@@ -1,6 +1,7 @@
 from .parameter_group_number import ParameterGroupNumber
 from .message_id import MessageId, FrameFormat
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,10 @@ class J1939_22:
 
         # number of packets that can be sent/received with CMDT (Connection Mode Data Transfer)
         self._max_cmdt_packets = max_cmdt_packets
+
+        # Lock protecting _rcv_buffer, _snd_buffer, and _multi_pg_snd_buffer — accessed from
+        # both the Notifier thread (notify/process_tp_*) and the protocol job thread (async_job_thread).
+        self._buffer_lock = threading.Lock()
 
         self.__job_thread_wakeup = job_thread_wakeup
         self.__send_message = send_message
@@ -218,28 +223,28 @@ class J1939_22:
                 self.__send_multi_pg(frame_format, [cpg], src_address, dst_address)
             else:
                 session = 0
-                deadline = time.time() + time_limit
-                while True:
-                    hash = self._buffer_hash_mpg(frame_format, session, src_address, dst_address)
-                    #hash = self._buffer_hash(session, src_address, dst_address)
-                    if hash not in self._multi_pg_snd_buffer:
-                        self._multi_pg_snd_buffer[hash] = {'deadline': deadline, 'cpg': [cpg], 'fill_level': 4 + data_length}
-                        break
-                    elif (self._multi_pg_snd_buffer[hash]['fill_level'] <= (self.DataLength.TP - data_length)):
-                        # update fill level
-                        self._multi_pg_snd_buffer[hash]['fill_level'] += 4 + data_length
-                        # update deadline
-                        if self._multi_pg_snd_buffer[hash]['deadline'] > deadline:
-                            self._multi_pg_snd_buffer[hash]['deadline'] = deadline
-                        # append c-pg
-                        self._multi_pg_snd_buffer[hash]['cpg'].append(cpg)
-                        break
-                    else:
-                        # trigger sending
-                        self._multi_pg_snd_buffer[hash]['deadline'] = time.time()
-                        self.__job_thread_wakeup()
-                        # get next buffer
-                        session += 1
+                deadline = time.monotonic() + time_limit
+                with self._buffer_lock:
+                    while True:
+                        hash = self._buffer_hash_mpg(frame_format, session, src_address, dst_address)
+                        if hash not in self._multi_pg_snd_buffer:
+                            self._multi_pg_snd_buffer[hash] = {'deadline': deadline, 'cpg': [cpg], 'fill_level': 4 + data_length}
+                            break
+                        elif (self._multi_pg_snd_buffer[hash]['fill_level'] <= (self.DataLength.TP - data_length)):
+                            # update fill level
+                            self._multi_pg_snd_buffer[hash]['fill_level'] += 4 + data_length
+                            # update deadline
+                            if self._multi_pg_snd_buffer[hash]['deadline'] > deadline:
+                                self._multi_pg_snd_buffer[hash]['deadline'] = deadline
+                            # append c-pg
+                            self._multi_pg_snd_buffer[hash]['cpg'].append(cpg)
+                            break
+                        else:
+                            # trigger sending
+                            self._multi_pg_snd_buffer[hash]['deadline'] = time.monotonic()
+                            self.__job_thread_wakeup()
+                            # get next buffer
+                            session += 1
         else:
             # if the PF is between 0 and 239, the message is destination dependent when pdu_specific != 255
             # if the PF is between 240 and 255, the message can only be broadcast
@@ -276,37 +281,39 @@ class J1939_22:
                 self.__send_tp_bam(priority, src_address, session_num, pgn.value, message_size, num_segments)
 
                 # init new buffer for this connection
-                self._snd_buffer[buffer_hash] = {
-                        'pgn': pgn.value,
-                        'priority': priority,
-                        'session': session_num,
-                        'message_size': message_size,
-                        'num_segments': num_segments,
-                        'data': data_list,
-                        'state': self.SendBufferState.SENDING_BAM,
-                        'deadline': time.time() + self._minimum_tp_bam_dt_interval,
-                        'src_address' : src_address,
-                        'dest_address' : ParameterGroupNumber.Address.GLOBAL,
-                        'next_packet_to_send' : 0,
-                    }
+                with self._buffer_lock:
+                    self._snd_buffer[buffer_hash] = {
+                            'pgn': pgn.value,
+                            'priority': priority,
+                            'session': session_num,
+                            'message_size': message_size,
+                            'num_segments': num_segments,
+                            'data': data_list,
+                            'state': self.SendBufferState.SENDING_BAM,
+                            'deadline': time.monotonic() + self._minimum_tp_bam_dt_interval,
+                            'src_address' : src_address,
+                            'dest_address' : ParameterGroupNumber.Address.GLOBAL,
+                            'next_packet_to_send' : 0,
+                        }
             else:
                 # send RTS/CTS
                 pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
                 # init new buffer for this connection
-                self._snd_buffer[buffer_hash] = {
-                        'pgn': pgn.value,
-                        'priority': priority,
-                        'session': session_num,
-                        'message_size': message_size,
-                        'num_segments': num_segments,
-                        'data': data_list,
-                        'state': self.SendBufferState.WAITING_CTS,
-                        'deadline': time.time() + self.Timeout.T3,
-                        'src_address' : src_address,
-                        'dest_address' : pdu_specific,
-                        'next_packet_to_send' : 0,
-                        'next_wait_on_cts': 0,
-                    }
+                with self._buffer_lock:
+                    self._snd_buffer[buffer_hash] = {
+                            'pgn': pgn.value,
+                            'priority': priority,
+                            'session': session_num,
+                            'message_size': message_size,
+                            'num_segments': num_segments,
+                            'data': data_list,
+                            'state': self.SendBufferState.WAITING_CTS,
+                            'deadline': time.monotonic() + self.Timeout.T3,
+                            'src_address' : src_address,
+                            'dest_address' : pdu_specific,
+                            'next_packet_to_send' : 0,
+                            'next_wait_on_cts': 0,
+                        }
                 self.__send_tp_rts(priority, src_address, pdu_specific, session_num, pgn.value, message_size, num_segments, min(self._max_cmdt_packets, num_segments))
 
             self.__job_thread_wakeup()
@@ -352,124 +359,119 @@ class J1939_22:
 
         next_wakeup = now + 5.0 # wakeup in 5 seconds
 
-        # check receive buffers for timeout
-        # using 'list(x)' to prevent 'RuntimeError: dictionary changed size during iteration'
-        for bufid in list(self._rcv_buffer):
-            buf = self._rcv_buffer[bufid]
-            if buf['deadline'] != 0:
-                if buf['deadline'] > now:
-                    if next_wakeup > buf['deadline']:
-                        next_wakeup = buf['deadline']
-                else:
-                    # deadline reached
-                    logger.info('Deadline reached for rcv_buffer src 0x%02X dst 0x%02X', buf['src_address'], buf['dest_address'] )
-                    if buf['dest_address'] != ParameterGroupNumber.Address.GLOBAL:
-                        self.__send_tp_abort(buf['dest_address'], buf['src_address'], buf['session'], self.ConnectionAbortReason.TIMEOUT, buf['pgn'])
-                        del self._rcv_buffer[bufid]
-                        self.__put_rts_cts_session(buf['session'])
-                    else:
-                        del self._rcv_buffer[bufid]
-                        self.__put_bam_session(buf['session'])
-                    # TODO: should we notify our CAs about the cancelled transfer?
-
-        # check multi-pg send buffers for timeout
-        # using 'list(x)' to prevent 'RuntimeError: dictionary changed size during iteration'
-        for bufid in list(self._multi_pg_snd_buffer):
-            buf = self._multi_pg_snd_buffer[bufid]
-            if buf['deadline'] > now:
-                if next_wakeup > buf['deadline']:
-                    next_wakeup = buf['deadline']
-            else:
-                # deadline reached
-                frame_format, session_num, src_address, dst_address = self._buffer_unhash_mpg(bufid)
-
-                self.__send_multi_pg(frame_format, buf['cpg'], src_address, dst_address)
-
-                del self._multi_pg_snd_buffer[bufid]
-
-
-        # check send buffers
-        # using 'list(x)' to prevent 'RuntimeError: dictionary changed size during iteration'
-        for bufid in list(self._snd_buffer):
-            buf = self._snd_buffer[bufid]
-            if buf['deadline'] != 0:
-                if buf['deadline'] > now:
-                    if next_wakeup > buf['deadline']:
-                        next_wakeup = buf['deadline']
-                else:
-                    # deadline reached
-                    if buf['state'] == self.SendBufferState.WAITING_CTS:
-                        logger.info('Deadline WAITING_CTS reached for snd_buffer src 0x%02X dst 0x%02X', buf['src_address'], buf['dest_address'] )
-                        self.__send_tp_abort(buf['src_address'], buf['dest_address'], buf['session'], self.ConnectionAbortReason.TIMEOUT, buf['pgn'])
-                        del self._snd_buffer[bufid]
-                        self.__put_rts_cts_session(buf['session'])
-                        # TODO: should we notify our CAs about the cancelled transfer?
-
-                    elif buf['state'] == self.SendBufferState.SENDING_RTS_CTS:
-                        while buf['next_packet_to_send'] < buf['num_segments']:
-                            package = buf['next_packet_to_send']
-                            self.__send_tp_dt(buf['src_address'], buf['dest_address'], buf['session'], package+1, buf['data'][package])
-
-                            buf['next_packet_to_send'] += 1
-                            # send end of message status
-                            if (package+1) == buf['num_segments']:
-                                self.__send_tp_eom_status(buf['src_address'], buf['dest_address'], buf['session'], buf['message_size'], buf['num_segments'], buf['pgn'])
-                                buf['deadline'] = time.time() + self.Timeout.T5
-                                buf['state'] = self.SendBufferState.WAITING_EOM_ACK
-                                break
-                            elif package == buf['next_wait_on_cts']:
-                                # wait on next cts
-                                buf['state'] = self.SendBufferState.WAITING_CTS
-                                buf['deadline'] = time.time() + self.Timeout.T3
-                                break
-                            elif self._minimum_tp_rts_cts_dt_interval != None:
-                                buf['deadline'] = time.time() + self._minimum_tp_rts_cts_dt_interval
-                                break
-
-                        # recalc next wakeup
+        with self._buffer_lock:
+            # check receive buffers for timeout
+            for bufid in list(self._rcv_buffer):
+                buf = self._rcv_buffer[bufid]
+                if buf['deadline'] != 0:
+                    if buf['deadline'] > now:
                         if next_wakeup > buf['deadline']:
                             next_wakeup = buf['deadline']
-
-                    elif buf['state'] == self.SendBufferState.WAITING_EOM_ACK:
-                        # TODO: should we inform the application about the eom ack timeout?
-                        del self._snd_buffer[bufid]
-                        self.__put_rts_cts_session(buf['session'])
-
-                    elif buf['state'] == self.SendBufferState.EOM_ACK_RECEIVED:
-                        # TODO: should we inform the application about the successful transmission?
-                        del self._snd_buffer[bufid]
-                        self.__put_rts_cts_session(buf['session'])
-
-                    elif buf['state'] == self.SendBufferState.SENDING_BAM:
-                        # send next broadcast message...
-                        package = buf['next_packet_to_send']
-                        self.__send_tp_dt(buf['src_address'], buf['dest_address'], buf['session'], package+1, buf['data'][package])
-                        buf['next_packet_to_send'] += 1
-
-                        if buf['next_packet_to_send'] < buf['num_segments']:
-                            buf['deadline'] = time.time() + self._minimum_tp_bam_dt_interval
-                            # recalc next wakeup
-                            if next_wakeup > buf['deadline']:
-                                next_wakeup = buf['deadline']
-                        else:
-                            buf['state'] = self.SendBufferState.SENDING_EOM_STATUS
-                            # recalc next wakeup
-                            buf['deadline'] = time.time() + self._minimum_tp_bam_dt_interval
-                            if next_wakeup > buf['deadline']:
-                                next_wakeup = buf['deadline']
-
-                    elif buf['state'] == self.SendBufferState.SENDING_EOM_STATUS:
-                        # done
-                        self.__send_tp_eom_status(buf['src_address'], buf['dest_address'],
-                                                  buf['session'],
-                                                  buf['message_size'], buf['num_segments'], buf['pgn'])
-                        del self._snd_buffer[bufid]
-                        self.__put_bam_session(buf['session'])
-                    elif buf['state'] == self.SendBufferState.TRANSMISSION_FINISHED:
-                        del self._snd_buffer[bufid]
                     else:
-                        logger.critical('unknown SendBufferState %d', buf['state'])
-                        del self._snd_buffer[bufid]
+                        # deadline reached
+                        logger.info('Deadline reached for rcv_buffer src 0x%02X dst 0x%02X', buf['src_address'], buf['dest_address'] )
+                        if buf['dest_address'] != ParameterGroupNumber.Address.GLOBAL:
+                            self.__send_tp_abort(buf['dest_address'], buf['src_address'], buf['session'], self.ConnectionAbortReason.TIMEOUT, buf['pgn'])
+                            del self._rcv_buffer[bufid]
+                            self.__put_rts_cts_session(buf['session'])
+                        else:
+                            del self._rcv_buffer[bufid]
+                            self.__put_bam_session(buf['session'])
+                        # TODO: should we notify our CAs about the cancelled transfer?
+
+            # check multi-pg send buffers for timeout
+            for bufid in list(self._multi_pg_snd_buffer):
+                buf = self._multi_pg_snd_buffer[bufid]
+                if buf['deadline'] > now:
+                    if next_wakeup > buf['deadline']:
+                        next_wakeup = buf['deadline']
+                else:
+                    # deadline reached
+                    frame_format, session_num, src_address, dst_address = self._buffer_unhash_mpg(bufid)
+                    self.__send_multi_pg(frame_format, buf['cpg'], src_address, dst_address)
+                    del self._multi_pg_snd_buffer[bufid]
+
+            # check send buffers
+            for bufid in list(self._snd_buffer):
+                buf = self._snd_buffer[bufid]
+                if buf['deadline'] != 0:
+                    if buf['deadline'] > now:
+                        if next_wakeup > buf['deadline']:
+                            next_wakeup = buf['deadline']
+                    else:
+                        # deadline reached
+                        if buf['state'] == self.SendBufferState.WAITING_CTS:
+                            logger.info('Deadline WAITING_CTS reached for snd_buffer src 0x%02X dst 0x%02X', buf['src_address'], buf['dest_address'] )
+                            self.__send_tp_abort(buf['src_address'], buf['dest_address'], buf['session'], self.ConnectionAbortReason.TIMEOUT, buf['pgn'])
+                            del self._snd_buffer[bufid]
+                            self.__put_rts_cts_session(buf['session'])
+                            # TODO: should we notify our CAs about the cancelled transfer?
+
+                        elif buf['state'] == self.SendBufferState.SENDING_RTS_CTS:
+                            while buf['next_packet_to_send'] < buf['num_segments']:
+                                package = buf['next_packet_to_send']
+                                self.__send_tp_dt(buf['src_address'], buf['dest_address'], buf['session'], package+1, buf['data'][package])
+
+                                buf['next_packet_to_send'] += 1
+                                # send end of message status
+                                if (package+1) == buf['num_segments']:
+                                    self.__send_tp_eom_status(buf['src_address'], buf['dest_address'], buf['session'], buf['message_size'], buf['num_segments'], buf['pgn'])
+                                    buf['deadline'] = time.monotonic() + self.Timeout.T5
+                                    buf['state'] = self.SendBufferState.WAITING_EOM_ACK
+                                    break
+                                elif package == buf['next_wait_on_cts']:
+                                    # wait on next cts
+                                    buf['state'] = self.SendBufferState.WAITING_CTS
+                                    buf['deadline'] = time.monotonic() + self.Timeout.T3
+                                    break
+                                elif self._minimum_tp_rts_cts_dt_interval != None:
+                                    buf['deadline'] = time.monotonic() + self._minimum_tp_rts_cts_dt_interval
+                                    break
+
+                            # recalc next wakeup
+                            if next_wakeup > buf['deadline']:
+                                next_wakeup = buf['deadline']
+
+                        elif buf['state'] == self.SendBufferState.WAITING_EOM_ACK:
+                            # TODO: should we inform the application about the eom ack timeout?
+                            del self._snd_buffer[bufid]
+                            self.__put_rts_cts_session(buf['session'])
+
+                        elif buf['state'] == self.SendBufferState.EOM_ACK_RECEIVED:
+                            # TODO: should we inform the application about the successful transmission?
+                            del self._snd_buffer[bufid]
+                            self.__put_rts_cts_session(buf['session'])
+
+                        elif buf['state'] == self.SendBufferState.SENDING_BAM:
+                            # send next broadcast message...
+                            package = buf['next_packet_to_send']
+                            self.__send_tp_dt(buf['src_address'], buf['dest_address'], buf['session'], package+1, buf['data'][package])
+                            buf['next_packet_to_send'] += 1
+
+                            if buf['next_packet_to_send'] < buf['num_segments']:
+                                buf['deadline'] = time.monotonic() + self._minimum_tp_bam_dt_interval
+                                # recalc next wakeup
+                                if next_wakeup > buf['deadline']:
+                                    next_wakeup = buf['deadline']
+                            else:
+                                buf['state'] = self.SendBufferState.SENDING_EOM_STATUS
+                                # recalc next wakeup
+                                buf['deadline'] = time.monotonic() + self._minimum_tp_bam_dt_interval
+                                if next_wakeup > buf['deadline']:
+                                    next_wakeup = buf['deadline']
+
+                        elif buf['state'] == self.SendBufferState.SENDING_EOM_STATUS:
+                            # done
+                            self.__send_tp_eom_status(buf['src_address'], buf['dest_address'],
+                                                      buf['session'],
+                                                      buf['message_size'], buf['num_segments'], buf['pgn'])
+                            del self._snd_buffer[bufid]
+                            self.__put_bam_session(buf['session'])
+                        elif buf['state'] == self.SendBufferState.TRANSMISSION_FINISHED:
+                            del self._snd_buffer[bufid]
+                        else:
+                            logger.critical('unknown SendBufferState %d', buf['state'])
+                            del self._snd_buffer[bufid]
 
         return next_wakeup
 
@@ -499,132 +501,133 @@ class J1939_22:
         segment_num   = (data[4]  & 0xFF) | ((data[5]  & 0xFF) << 8) | ((data[6] & 0xFF)  << 16)
         pgn           = (data[9] & 0xFF)  | ((data[10] & 0xFF) << 8) | ((data[11] & 0xFF) << 16)
 
-        if control_byte == self.TpControlType.RTS:
-            buffer_hash   = self._buffer_hash(session_num, src_address, dest_address)
-            num_segments = data[7] # Maximum number of segments that can be sent in response to one CTS.
+        with self._buffer_lock:
+            if control_byte == self.TpControlType.RTS:
+                buffer_hash   = self._buffer_hash(session_num, src_address, dest_address)
+                num_segments = data[7] # Maximum number of segments that can be sent in response to one CTS.
 
-            if buffer_hash in self._rcv_buffer:
-                # according SAE J1939-22 we have to send an ABORT if an active
-                # transmission is already established
-                self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.BUSY, pgn)
-                self.__put_rts_cts_session(session_num)
-                return
+                if buffer_hash in self._rcv_buffer:
+                    # according SAE J1939-22 we have to send an ABORT if an active
+                    # transmission is already established
+                    self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.BUSY, pgn)
+                    self.__put_rts_cts_session(session_num)
+                    return
 
-            # limit max number segments
-            num_segments = min(num_segments, segment_num)
+                # limit max number segments
+                num_segments = min(num_segments, segment_num)
 
-            # open new buffer for this connection
-            self._rcv_buffer[buffer_hash] = {
-                    'pgn': pgn,
-                    'session': session_num,
-                    'message_size': message_size, # total message size, number of bytes
-                    'num_segments': segment_num,  # total number of segments
-                    'next_packet': 1,
-                    'next_cts_border': min(self._max_cmdt_packets, num_segments),
-                    'num_segments_max_rec': min(self._max_cmdt_packets, num_segments),
-                    'data': [],
-                    'deadline': time.time() + self.Timeout.T2,
-                    'src_address' : src_address,
-                    'dest_address' : dest_address,
-                }
-            self.__send_tp_cts(dest_address, src_address, session_num, self._rcv_buffer[buffer_hash]['num_segments_max_rec'], 1, pgn)
-            self.__job_thread_wakeup()
-
-        elif control_byte == self.TpControlType.CTS:
-            buffer_hash   = self._buffer_hash(session_num, dest_address, src_address)
-            num_segments = data[7] # Maximum number of segments that can be sent
-            if buffer_hash not in self._snd_buffer:
-                self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.RESOURCES, pgn)
-                self.__put_rts_cts_session(session_num)
-                return
-            if num_segments == 0:
-                # SAE J1939/22
-                # receiver requests a pause
-                self._snd_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.Th
+                # open new buffer for this connection
+                self._rcv_buffer[buffer_hash] = {
+                        'pgn': pgn,
+                        'session': session_num,
+                        'message_size': message_size, # total message size, number of bytes
+                        'num_segments': segment_num,  # total number of segments
+                        'next_packet': 1,
+                        'next_cts_border': min(self._max_cmdt_packets, num_segments),
+                        'num_segments_max_rec': min(self._max_cmdt_packets, num_segments),
+                        'data': [],
+                        'deadline': time.monotonic() + self.Timeout.T2,
+                        'src_address' : src_address,
+                        'dest_address' : dest_address,
+                    }
+                self.__send_tp_cts(dest_address, src_address, session_num, self._rcv_buffer[buffer_hash]['num_segments_max_rec'], 1, pgn)
                 self.__job_thread_wakeup()
-                return
 
-            num_segments_all = self._snd_buffer[buffer_hash]['num_segments']
-            self._snd_buffer[buffer_hash]['next_packet_to_send'] = segment_num - 1
-            segments_to_be_sent = num_segments_all - self._snd_buffer[buffer_hash]['next_packet_to_send']
-            if num_segments > num_segments_all:
-                logger.debug("CTS: Allowed more packets %d than complete transmission %d", num_segments, num_segments_all)
-                num_segments = num_segments_all
-            if num_segments > self._max_cmdt_packets:
-                logger.debug("CTS: Allowed more packets %d than transmitters max-cmdt-number %d", num_segments, self._max_cmdt_packets)
-                num_segments = self._max_cmdt_packets
-            if num_segments > segments_to_be_sent:
-                logger.debug("CTS: Allowed more packets %d than needed to complete transmission %d", num_segments, segments_to_be_sent)
-                num_segments = segments_to_be_sent
+            elif control_byte == self.TpControlType.CTS:
+                buffer_hash   = self._buffer_hash(session_num, dest_address, src_address)
+                num_segments = data[7] # Maximum number of segments that can be sent
+                if buffer_hash not in self._snd_buffer:
+                    self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.RESOURCES, pgn)
+                    self.__put_rts_cts_session(session_num)
+                    return
+                if num_segments == 0:
+                    # SAE J1939/22
+                    # receiver requests a pause
+                    self._snd_buffer[buffer_hash]['deadline'] = time.monotonic() + self.Timeout.Th
+                    self.__job_thread_wakeup()
+                    return
 
-            self._snd_buffer[buffer_hash]['next_wait_on_cts'] = self._snd_buffer[buffer_hash]['next_packet_to_send'] + num_segments - 1
+                num_segments_all = self._snd_buffer[buffer_hash]['num_segments']
+                self._snd_buffer[buffer_hash]['next_packet_to_send'] = segment_num - 1
+                segments_to_be_sent = num_segments_all - self._snd_buffer[buffer_hash]['next_packet_to_send']
+                if num_segments > num_segments_all:
+                    logger.debug("CTS: Allowed more packets %d than complete transmission %d", num_segments, num_segments_all)
+                    num_segments = num_segments_all
+                if num_segments > self._max_cmdt_packets:
+                    logger.debug("CTS: Allowed more packets %d than transmitters max-cmdt-number %d", num_segments, self._max_cmdt_packets)
+                    num_segments = self._max_cmdt_packets
+                if num_segments > segments_to_be_sent:
+                    logger.debug("CTS: Allowed more packets %d than needed to complete transmission %d", num_segments, segments_to_be_sent)
+                    num_segments = segments_to_be_sent
 
-            self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.SENDING_RTS_CTS
-            self._snd_buffer[buffer_hash]['deadline'] = time.time() # wake up immediately
-            self.__job_thread_wakeup()
+                self._snd_buffer[buffer_hash]['next_wait_on_cts'] = self._snd_buffer[buffer_hash]['next_packet_to_send'] + num_segments - 1
 
-        elif control_byte == self.TpControlType.EOM_STATUS:
-            buffer_hash = self._buffer_hash(session_num, src_address, dest_address)
-            if buffer_hash not in self._rcv_buffer:
-                self.__put_rts_cts_session(session_num)
-                return
-            pgn = self._rcv_buffer[buffer_hash]['pgn']
-            if (self._rcv_buffer[buffer_hash]['message_size'] == message_size) and (self._rcv_buffer[buffer_hash]['num_segments'] == segment_num):
-                self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
-                if dest_address != ParameterGroupNumber.Address.GLOBAL:
-                    self.__send_tp_eom_ack(dest_address, src_address, session_num, message_size, segment_num, pgn)
-            else:
-                self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.RESOURCES, pgn)
-            del self._rcv_buffer[buffer_hash]
-            self.__put_rts_cts_session(session_num)
+                self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.SENDING_RTS_CTS
+                self._snd_buffer[buffer_hash]['deadline'] = time.monotonic() # wake up immediately
+                self.__job_thread_wakeup()
 
-        elif control_byte == self.TpControlType.EOM_ACK:
-            buffer_hash   = self._buffer_hash(session_num, dest_address, src_address)
-            if buffer_hash not in self._snd_buffer:
-                self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.RESOURCES, pgn)
-                self.__put_rts_cts_session(session_num)
-                return
-            # TODO: should we inform the application about the successful transmission?
-            # Notify subscribers here to be used for the memory access server to know when to send operation complete
-            self.__notify_subscribers(mid.priority, pgn, mid.source_address, dest_address, timestamp, data)
-            self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.EOM_ACK_RECEIVED
-            self._snd_buffer[buffer_hash]['deadline'] = time.time() # wake up immediately
-            self.__job_thread_wakeup()
-
-        # BAM FD.TP.CM received
-        elif control_byte == self.TpControlType.BAM:
-            buffer_hash   = self._buffer_hash(session_num, src_address, dest_address)
-            if buffer_hash in self._rcv_buffer:
-                # buffer already in use
-                logger.info('bam receive buffer already in use 0x%x', buffer_hash )
+            elif control_byte == self.TpControlType.EOM_STATUS:
+                buffer_hash = self._buffer_hash(session_num, src_address, dest_address)
+                if buffer_hash not in self._rcv_buffer:
+                    self.__put_rts_cts_session(session_num)
+                    return
+                pgn = self._rcv_buffer[buffer_hash]['pgn']
+                if (self._rcv_buffer[buffer_hash]['message_size'] == message_size) and (self._rcv_buffer[buffer_hash]['num_segments'] == segment_num):
+                    self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
+                    if dest_address != ParameterGroupNumber.Address.GLOBAL:
+                        self.__send_tp_eom_ack(dest_address, src_address, session_num, message_size, segment_num, pgn)
+                else:
+                    self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.RESOURCES, pgn)
                 del self._rcv_buffer[buffer_hash]
-                self.__put_bam_session(self._rcv_buffer['session'])
-                return
+                self.__put_rts_cts_session(session_num)
 
-            # init new buffer for this connection
-            self._rcv_buffer[buffer_hash] = {
-                    'pgn': pgn,
-                    'session': session_num,
-                    'message_size': message_size, # Total message size, number of bytes
-                    'num_segments': segment_num,  # Total number of segments
-                    'next_packet': 1,
-                    'data': [],
-                    'deadline': time.time() + self.Timeout.T1,
-                    'src_address' : src_address,
-                    'dest_address' : dest_address,
-                }
-            self.__job_thread_wakeup()
+            elif control_byte == self.TpControlType.EOM_ACK:
+                buffer_hash   = self._buffer_hash(session_num, dest_address, src_address)
+                if buffer_hash not in self._snd_buffer:
+                    self.__send_tp_abort(dest_address, src_address, session_num, self.ConnectionAbortReason.RESOURCES, pgn)
+                    self.__put_rts_cts_session(session_num)
+                    return
+                # TODO: should we inform the application about the successful transmission?
+                # Notify subscribers here to be used for the memory access server to know when to send operation complete
+                self.__notify_subscribers(mid.priority, pgn, mid.source_address, dest_address, timestamp, data)
+                self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.EOM_ACK_RECEIVED
+                self._snd_buffer[buffer_hash]['deadline'] = time.monotonic() # wake up immediately
+                self.__job_thread_wakeup()
 
-        elif control_byte == self.TpControlType.ABORT:
-            # if abort received before transmission established -> cancel transmission
-            buffer_hash = self._buffer_hash(session_num, dest_address, src_address)
-            if buffer_hash in self._snd_buffer and self._snd_buffer[buffer_hash]['state'] == self.SendBufferState.WAITING_CTS:
-                # cancel transmission
-                self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.TRANSMISSION_FINISHED
-                self._snd_buffer[buffer_hash]['deadline'] = time.time()
-            # TODO: any more abort responses?
-        else:
-            raise RuntimeError('Received TP.CM with unknown control_byte %d', control_byte)
+            # BAM FD.TP.CM received
+            elif control_byte == self.TpControlType.BAM:
+                buffer_hash   = self._buffer_hash(session_num, src_address, dest_address)
+                if buffer_hash in self._rcv_buffer:
+                    # buffer already in use
+                    logger.info('bam receive buffer already in use 0x%x', buffer_hash )
+                    del self._rcv_buffer[buffer_hash]
+                    self.__put_bam_session(session_num)
+                    return
+
+                # init new buffer for this connection
+                self._rcv_buffer[buffer_hash] = {
+                        'pgn': pgn,
+                        'session': session_num,
+                        'message_size': message_size, # Total message size, number of bytes
+                        'num_segments': segment_num,  # Total number of segments
+                        'next_packet': 1,
+                        'data': [],
+                        'deadline': time.monotonic() + self.Timeout.T1,
+                        'src_address' : src_address,
+                        'dest_address' : dest_address,
+                    }
+                self.__job_thread_wakeup()
+
+            elif control_byte == self.TpControlType.ABORT:
+                # if abort received before transmission established -> cancel transmission
+                buffer_hash = self._buffer_hash(session_num, dest_address, src_address)
+                if buffer_hash in self._snd_buffer and self._snd_buffer[buffer_hash]['state'] == self.SendBufferState.WAITING_CTS:
+                    # cancel transmission
+                    self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.TRANSMISSION_FINISHED
+                    self._snd_buffer[buffer_hash]['deadline'] = time.monotonic()
+                # TODO: any more abort responses?
+            else:
+                raise RuntimeError('Received TP.CM with unknown control_byte %d', control_byte)
 
     def _process_tp_dt(self, mid, dest_address, data, timestamp):
 
@@ -643,48 +646,49 @@ class J1939_22:
             return
 
         buffer_hash = self._buffer_hash(session_num, src_address, dest_address)
-        if buffer_hash not in self._rcv_buffer:
-            logger.critical('buffer error process dt 0x%x', buffer_hash)
-            return
 
-        if self._rcv_buffer[buffer_hash]['next_packet'] != segment_num:
-            logger.critical('packet error. required: '+ str(self._rcv_buffer[buffer_hash]['next_packet']) + ' received: ' + str(segment_num) )
-            return
+        with self._buffer_lock:
+            if buffer_hash not in self._rcv_buffer:
+                logger.critical('buffer error process dt 0x%x', buffer_hash)
+                return
 
-        # get data
-        self._rcv_buffer[buffer_hash]['data'].extend(data[4:])
+            if self._rcv_buffer[buffer_hash]['next_packet'] != segment_num:
+                logger.critical('packet error. required: '+ str(self._rcv_buffer[buffer_hash]['next_packet']) + ' received: ' + str(segment_num) )
+                return
 
-        self._rcv_buffer[buffer_hash]['next_packet'] = segment_num + 1
+            # get data
+            self._rcv_buffer[buffer_hash]['data'].extend(data[4:])
 
-        # message is complete with sending an acknowledge
-        if len(self._rcv_buffer[buffer_hash]['data']) >= self._rcv_buffer[buffer_hash]['message_size']:
-            logger.info('finished RCV of PGN {} with size {}'.format(self._rcv_buffer[buffer_hash]['pgn'], self._rcv_buffer[buffer_hash]['message_size']))
-            # shorten data to message_size
-            self._rcv_buffer[buffer_hash]['data'] = self._rcv_buffer[buffer_hash]['data'][:self._rcv_buffer[buffer_hash]['message_size']]
-            # finished reassembly
-            if dest_address != ParameterGroupNumber.Address.GLOBAL:
-                # set deadlin for waiting on eom status
-                self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T1
-            self.__job_thread_wakeup()
-            return
+            self._rcv_buffer[buffer_hash]['next_packet'] = segment_num + 1
 
-        # send clear to send
-        if (dest_address != ParameterGroupNumber.Address.GLOBAL) and (segment_num >= self._rcv_buffer[buffer_hash]['next_cts_border']):
-            # send cts
-            number_of_packets_that_can_be_sent = min( self._rcv_buffer[buffer_hash]['num_segments_max_rec'], self._rcv_buffer[buffer_hash]['num_segments'] - self._rcv_buffer[buffer_hash]['next_cts_border'] )
-            next_packet_to_be_sent = self._rcv_buffer[buffer_hash]['next_cts_border'] + 1
-            self.__send_tp_cts(dest_address, src_address, session_num, number_of_packets_that_can_be_sent, next_packet_to_be_sent, self._rcv_buffer[buffer_hash]['pgn'])
+            # message is complete with sending an acknowledge
+            if len(self._rcv_buffer[buffer_hash]['data']) >= self._rcv_buffer[buffer_hash]['message_size']:
+                logger.info('finished RCV of PGN {} with size {}'.format(self._rcv_buffer[buffer_hash]['pgn'], self._rcv_buffer[buffer_hash]['message_size']))
+                # shorten data to message_size
+                self._rcv_buffer[buffer_hash]['data'] = self._rcv_buffer[buffer_hash]['data'][:self._rcv_buffer[buffer_hash]['message_size']]
+                # finished reassembly
+                if dest_address != ParameterGroupNumber.Address.GLOBAL:
+                    # set deadline for waiting on eom status
+                    self._rcv_buffer[buffer_hash]['deadline'] = time.monotonic() + self.Timeout.T1
+                self.__job_thread_wakeup()
+                return
 
-            # calculate next packet number at which a CTS is to be sent
-            self._rcv_buffer[buffer_hash]['next_cts_border'] = min(self._rcv_buffer[buffer_hash]['next_cts_border'] + self._rcv_buffer[buffer_hash]['num_segments_max_rec'],
-                                                               self._rcv_buffer[buffer_hash]['num_segments'])
+            # send clear to send
+            if (dest_address != ParameterGroupNumber.Address.GLOBAL) and (segment_num >= self._rcv_buffer[buffer_hash]['next_cts_border']):
+                # send cts
+                number_of_packets_that_can_be_sent = min( self._rcv_buffer[buffer_hash]['num_segments_max_rec'], self._rcv_buffer[buffer_hash]['num_segments'] - self._rcv_buffer[buffer_hash]['next_cts_border'] )
+                next_packet_to_be_sent = self._rcv_buffer[buffer_hash]['next_cts_border'] + 1
+                self.__send_tp_cts(dest_address, src_address, session_num, number_of_packets_that_can_be_sent, next_packet_to_be_sent, self._rcv_buffer[buffer_hash]['pgn'])
 
-            self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T2
-            self.__job_thread_wakeup()
-            return
+                # calculate next packet number at which a CTS is to be sent
+                self._rcv_buffer[buffer_hash]['next_cts_border'] = min(self._rcv_buffer[buffer_hash]['next_cts_border'] + self._rcv_buffer[buffer_hash]['num_segments_max_rec'],
+                                                                   self._rcv_buffer[buffer_hash]['num_segments'])
 
-        self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T1
-        #self.__job_thread_wakeup()
+                self._rcv_buffer[buffer_hash]['deadline'] = time.monotonic() + self.Timeout.T2
+                self.__job_thread_wakeup()
+                return
+
+            self._rcv_buffer[buffer_hash]['deadline'] = time.monotonic() + self.Timeout.T1
 
     def _process_multi_pg(self, mid : MessageId, dest_address, data, timestamp):
         # currently "SAE J1939 with no assurance data" trailer format supported only

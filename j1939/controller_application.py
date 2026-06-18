@@ -123,6 +123,28 @@ class ControllerApplication:
         """
         self._ecu.remove_timer(callback)
 
+    def register_dependent(self, dependent):
+        """Register a helper whose ``stop()`` should be called on ECU shutdown.
+
+        Convenience forwarder to :meth:`ElectronicControlUnit.register_dependent`
+        for helpers that only hold a reference to a CA.
+
+        :param dependent:
+            Any object exposing a no-arg ``stop()`` method.
+        """
+        self._ecu.register_dependent(dependent)
+
+    def unregister_dependent(self, dependent):
+        """Remove a previously-registered dependent.
+
+        Convenience forwarder to
+        :meth:`ElectronicControlUnit.unregister_dependent`.
+
+        :param dependent:
+            The object previously passed to :meth:`register_dependent`.
+        """
+        self._ecu.unregister_dependent(dependent)
+
     def start(self, claim_delay=0.5):
         """Starts the CA
         :param claim_delay:
