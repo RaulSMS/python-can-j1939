@@ -35,7 +35,7 @@ jobs:
         run: pip install ruff
 
       - name: Check syntax compatibility (target Python 3.10)
-        run: ruff check --select=E999 .
+        run: python -m compileall -q j1939/ test/ test_helpers/
 
   test:
     # The type of runner that the job will run on
