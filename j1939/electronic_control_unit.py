@@ -107,8 +107,8 @@ class ElectronicControlUnit:
 
         :param channel:
             Backend specific channel for the CAN interface.
-        :param str bustype:
-            Name of the interface. See
+        :param str interface:
+            Name of the interface (formerly ``bustype``, renamed in python-can v4.2). See
             `python-can manual <https://python-can.readthedocs.io/en/latest/configuration.html#interface-names>`__
             for full list of supported interfaces.
         :param int bitrate:

@@ -66,7 +66,7 @@ def main():
     ecu = j1939.ElectronicControlUnit(data_link_layer='j1939-22', max_cmdt_packets=200)
 
     # can fd Baud: 500k/2M
-    ecu.connect(bustype='pcan', channel='PCAN_USBBUS3', fd=True,
+    ecu.connect(interface='pcan', channel='PCAN_USBBUS3', fd=True,
                         f_clock_mhz=80, nom_brp=10, nom_tseg1=12, nom_tseg2=3, nom_sjw=1, data_brp=4, data_tseg1=7, data_tseg2=2, data_sjw=1)
 
     # subscribe to all (global) messages on the bus

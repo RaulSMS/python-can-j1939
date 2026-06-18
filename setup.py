@@ -26,7 +26,7 @@ setup(
         "Topic :: Scientific/Engineering"
     ],
     install_requires=[
-        "python-can >= 3.3.4",
+        "python-can >= 4.2.0",
         "pytest >= 6.2.5",
     ],
     include_package_data=True,
