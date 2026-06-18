@@ -145,7 +145,7 @@ class DtcLamp:
         data = [0]*2
         for idx, lamp_key in enumerate(self._KEYS):
             # initialize not available lamps
-            if status_dic.get(lamp_key) == None:
+            if status_dic.get(lamp_key) is None:
                 status_dic[lamp_key] = DtcLamp.OFF
             elif status_dic[lamp_key] not in self._DATA_LUT:
                 status_dic[lamp_key] = DtcLamp.OFF
@@ -195,7 +195,7 @@ class Dm1:
         :param callback:
             Function to call when Dm1 message is received.
         """
-        if self._msg_subscriber_added == False:
+        if not self._msg_subscriber_added:
             self._ca.subscribe(self._receive)
             self._msg_subscriber_added = True
 
@@ -274,12 +274,12 @@ class Dm1:
         # create payload - dtc
         for dtc_dic in self._dtc_dic_list:
             # not optional arguments
-            if dtc_dic.get('spn') == None:
+            if dtc_dic.get('spn') is None:
                 continue
-            if dtc_dic.get('fmi') == None:
+            if dtc_dic.get('fmi') is None:
                 continue
             # optional arguments
-            if dtc_dic.get('oc') == None:
+            if dtc_dic.get('oc') is None:
                 dtc_dic['oc'] = 0
             cm = dtc_dic.get('cm', 4)
 

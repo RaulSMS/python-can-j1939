@@ -8,7 +8,6 @@ import pytest
 
 from j1939.j1939_22 import J1939_22
 from j1939.message_id import FrameFormat
-from test_helpers.conftest import feeder
 
 
 class TestChunkingAlgorithm:

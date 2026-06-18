@@ -50,8 +50,8 @@ def _wait_no_threads_named(name, timeout=0.5):
         time.sleep(0.01)
     return False
 
-@pytest.mark.skip(reason=(f"This test is flaky and may fail on slow CI machines;\n"
-                         f"Needs to be updated to allow more generous timing or use a more robust synchronization method."))
+@pytest.mark.skip(reason=("This test is flaky and may fail on slow CI machines;\n"
+                         "Needs to be updated to allow more generous timing or use a more robust synchronization method."))
 def test_timer_no_drift():
     """Verify heapq-based timer fires at consistent 50ms intervals without drift."""
     ecu = _make_ecu()
@@ -120,7 +120,7 @@ def test_slow_callback_no_protocol_impact(feeder):
     feeder.ecu.subscribe(on_message)
     feeder.ecu.accept_all_messages = lambda: None  # already set by Feeder init
 
-    ca = feeder.accept_all_messages()
+    feeder.accept_all_messages()
     start = time.monotonic()
     feeder._inject_messages_into_ecu()
 
@@ -167,8 +167,8 @@ def test_concurrent_add_remove_no_crash():
 
     assert not errors, f"Exceptions during concurrent timer ops: {errors}"
 
-@pytest.mark.skip(reason=(f"This test is flaky and may fail on slow CI machines;\n"
-                         f"Needs to be updated to allow more generous timing or use a more robust synchronization method."))
+@pytest.mark.skip(reason=("This test is flaky and may fail on slow CI machines;\n"
+                         "Needs to be updated to allow more generous timing or use a more robust synchronization method."))
 def test_memory_access_event_latency():
     """MemoryAccess servicer thread responds to events within 5ms."""
     from j1939.memory_access import MemoryAccess, DMState

@@ -484,7 +484,7 @@ class MessageListener(Listener):
         self.stopped = False
 
     def on_message_received(self, msg : can.Message):
-        if self.stopped or msg.is_error_frame or msg.is_remote_frame or (msg.is_extended_id == False):
+        if self.stopped or msg.is_error_frame or msg.is_remote_frame or (not msg.is_extended_id):
             return
 
         try:

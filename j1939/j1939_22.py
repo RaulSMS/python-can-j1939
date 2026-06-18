@@ -69,15 +69,11 @@ class J1939_22:
         # List of ControllerApplication
         self._cas = []
 
-        self._LUT_FD_DLC = []
-        for i in range(9):  self._LUT_FD_DLC.append(i)
-        for _ in range(4):  self._LUT_FD_DLC.append(12)
-        for _ in range(4):  self._LUT_FD_DLC.append(16)
-        for _ in range(4):  self._LUT_FD_DLC.append(20)
-        for _ in range(4):  self._LUT_FD_DLC.append(24)
-        for _ in range(8):  self._LUT_FD_DLC.append(32)
-        for _ in range(16): self._LUT_FD_DLC.append(48)
-        for _ in range(16): self._LUT_FD_DLC.append(64)
+        self._LUT_FD_DLC = (
+            list(range(9)) +
+            [12] * 4 + [16] * 4 + [20] * 4 + [24] * 4 +
+            [32] * 8 + [48] * 16 + [64] * 16
+        )
 
         # minimum time between two tp rts/cts dt frames, not necessary for standard conforming applications,
         # (they would use RTS/CTS flow control), but helps to talk to others without patching the library
@@ -85,7 +81,7 @@ class J1939_22:
 
         # minimum time between two tp bam dt frames, inital value is 10ms
         # specified time range in j1939-22: 10-200ms
-        if minimum_tp_bam_dt_interval == None:
+        if minimum_tp_bam_dt_interval is None:
             self._minimum_tp_bam_dt_interval = 0.010
         else:
             self._minimum_tp_bam_dt_interval = minimum_tp_bam_dt_interval
@@ -176,7 +172,7 @@ class J1939_22:
 
     def __get_bam_session(self):
         for idx, i in enumerate(self.__bam_session_list):
-            if i == True:
+            if i:
                 self.__bam_session_list[idx] = False
                 return idx
         return None
@@ -186,7 +182,7 @@ class J1939_22:
 
     def __get_rts_cts_session(self):
         for idx, i in enumerate(self.__rts_cts_session_list):
-            if i == True:
+            if i:
                 self.__rts_cts_session_list[idx] = False
                 return idx
         return None
@@ -251,13 +247,13 @@ class J1939_22:
             if (pdu_specific == ParameterGroupNumber.Address.GLOBAL) or ParameterGroupNumber(0, pdu_format, pdu_specific).is_pdu2_format:
                 dest_address = ParameterGroupNumber.Address.GLOBAL
                 session_num = self.__get_bam_session()
-                if session_num == None:
+                if session_num is None:
                     #print('bam session not available')
                     return False
             else:
                 dest_address = pdu_specific
                 session_num = self.__get_rts_cts_session()
-                if session_num == None:
+                if session_num is None:
                     #print('rts/cts session not available')
                     return False
 
@@ -268,7 +264,8 @@ class J1939_22:
             num_segments = int(message_size / self.DataLength.TP ) + ((message_size % self.DataLength.TP ) != 0)
 
             # set default priority
-            if priority == None: priority = 7
+            if priority is None:
+                priority = 7
 
             # get chunks from data
             chunk_size = self.DataLength.TP
@@ -424,7 +421,7 @@ class J1939_22:
                                     buf['state'] = self.SendBufferState.WAITING_CTS
                                     buf['deadline'] = time.monotonic() + self.Timeout.T3
                                     break
-                                elif self._minimum_tp_rts_cts_dt_interval != None:
+                                elif self._minimum_tp_rts_cts_dt_interval is not None:
                                     buf['deadline'] = time.monotonic() + self._minimum_tp_rts_cts_dt_interval
                                     break
 
@@ -637,7 +634,7 @@ class J1939_22:
             return
 
         src_address = mid.source_address
-        dtfi        =  data[0] & 0xF # Data Transfer Format Indicator
+        data[0] & 0xF # Data Transfer Format Indicator
         session_num = (data[0] >> 4) & 0xF
         segment_num = (data[1] & 0xFF) | ((data[2]  & 0xFF) << 8) | ((data[3] & 0xFF)  << 16)
 
@@ -776,7 +773,8 @@ class J1939_22:
         else:
             # padding
             next_valid_fd_length = self._LUT_FD_DLC[len(data)]
-            if next_valid_fd_length < 0: next_valid_fd_length = 0
+            if next_valid_fd_length < 0:
+                next_valid_fd_length = 0
 
             while len(data)<next_valid_fd_length:
                 data.append(255)
@@ -817,7 +815,7 @@ class J1939_22:
                     if ca.message_acceptable(dest_address):
                         reject = False
                         break
-                if reject == True:
+                if reject:
                     return
 
         if pgn_value == ParameterGroupNumber.PGN.FEFF_MULTI_PG:

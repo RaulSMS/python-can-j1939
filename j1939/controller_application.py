@@ -167,7 +167,7 @@ class ControllerApplication:
     def _process_claim_async(self, cookie):
         time_to_sleep = 0.500
         if self._device_address_state == ControllerApplication.State.NONE:
-            if self._device_address_preferred != None:
+            if self._device_address_preferred is not None:
                 self._device_address_announced = self._device_address_preferred
                 self._send_address_claimed(self._device_address_announced)
                 if self._device_address_announced > 127 and self._device_address_announced < 248:
@@ -224,7 +224,7 @@ class ControllerApplication:
                 # TODO: are there any state variables we have to care about?
                 self._device_address = j1939.ParameterGroupNumber.Address.NULL
                 # TODO: maybe we should call an overloadable function here
-                if self._name.arbitrary_address_capable == False:
+                if not self._name.arbitrary_address_capable:
                     # bad luck
                     logger.error("After releasing our address we are configured to stop operation (CANNOT CLAIM)")
                     self._device_address_state = ControllerApplication.State.CANNOT_CLAIM
