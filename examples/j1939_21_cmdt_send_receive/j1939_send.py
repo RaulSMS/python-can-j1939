@@ -1,8 +1,6 @@
 import logging
 import time
-import can
 import j1939
-import os
 from hexdump import hexdump
 
 logging.getLogger('j1939').setLevel(logging.DEBUG)

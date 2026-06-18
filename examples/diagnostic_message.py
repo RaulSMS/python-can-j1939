@@ -1,6 +1,5 @@
 import logging
 import time
-import can
 import j1939
 
 logging.getLogger('j1939').setLevel(logging.DEBUG)
