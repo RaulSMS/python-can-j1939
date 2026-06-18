@@ -61,13 +61,13 @@ must not block.
 
 ### Tests
 
-- `test/` holds unit tests. `test_helpers/feeder.py` provides the `Feeder` fixture (registered
-  in `test_helpers/conftest.py`) which is the standard way to drive the stack from tests: it
+- `test/` holds unit tests. `test/helpers/feeder.py` provides the `Feeder` fixture (registered
+  in `test/conftest.py`) which is the standard way to drive the stack from tests: it
   replaces `ElectronicControlUnit.send_message` with a simulated bus, lets the test queue
   expected RX/TX messages and PDUs in order, and asserts that the stack produces the expected
   TX sequence. New protocol-level tests should follow that pattern instead of mocking
   `python-can` directly.
-- `test_helpers/feeder.AcceptAllCA` is a CA subclass with `message_acceptable` overridden to
+- `test/helpers/feeder.AcceptAllCA` is a CA subclass with `message_acceptable` overridden to
   accept everything — use it when a test needs to receive peer-to-peer messages without setting
   up a real claim.
 

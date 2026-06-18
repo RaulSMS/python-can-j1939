@@ -10,7 +10,7 @@ setup(
     name="can-j1939",
     url="https://github.com/juergenH87/python-can-j1939",
     version=__version__,
-    packages=find_packages(exclude=['docs', 'examples', 'test', 'test_helpers']),
+    packages=find_packages(exclude=['docs', 'examples', 'test']),
     author="Juergen Heilgemeir",
     description="SAE J1939 stack implementation",
     keywords="CAN SAE J1939 J1939-FD J1939-22",

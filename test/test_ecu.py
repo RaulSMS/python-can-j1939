@@ -2,7 +2,7 @@ import time
 
 import can
 import j1939
-from test_helpers.feeder import Feeder
+from test.helpers.feeder import Feeder
 
 
 def receive(feeder):
