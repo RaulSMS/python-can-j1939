@@ -1,6 +1,6 @@
 
 import can
-from test_helpers.feeder import Feeder
+from test.helpers.feeder import Feeder
 
 
 

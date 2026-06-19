@@ -15,7 +15,7 @@ import pytest
 
 import j1939
 from j1939.parameter_group_number import ParameterGroupNumber
-from test_helpers.feeder import Feeder
+from test.helpers.feeder import Feeder
 
 
 def _make_ecu():
