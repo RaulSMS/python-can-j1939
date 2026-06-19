@@ -32,6 +32,9 @@ setup(
         "test": [
             "pytest >= 6.2.5",
         ],
+        "lint": [
+            "ruff",
+        ],
     },
     include_package_data=True,
 )

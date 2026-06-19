@@ -31,8 +31,8 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install lint dependencies
+        run: pip install -e ".[lint]"
 
       - name: Lint
         run: ruff check .
