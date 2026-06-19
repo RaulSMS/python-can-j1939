@@ -176,7 +176,7 @@ class DM14Server:
         state: ResponseState,
         object_count: int,
         sa: int,
-        pgn: int = j1939.ParameterGroupNumber.PGN.DM15,
+        pgn: int = 55296, # FIXME: we should use constants, like we used to: j1939.ParameterGroupNumber.PGN.DM15, but we get into circular imports errors. https://github.com/RaulSMS/python-can-j1939/issues/24
         error: int = None,
         edcp: int = None,
     ) -> None:
