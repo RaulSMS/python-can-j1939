@@ -1,0 +1,31 @@
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",      # PEP 8 errors (formatting, whitespace)
+    "W",      # PEP 8 warnings
+    "F",      # Pyflakes (logical errors, unused imports, undefined names)
+    "I",      # isort (import sorting & organization)
+    "UP",     # pyupgrade (modern Python 3.10+ syntax)
+    "B",      # flake8-bugbear (common bugs - includes B018 for unused expressions!)
+    "N",      # pep8-naming (variable/function naming conventions)
+]
+
+ignore = [
+    "E501",   # line too long (use a formatter instead)
+    "E701",   # multiple statements on one line
+    "E702",   # multiple statements on one line (colon)
+    "E703",   # statement ends with semicolon
+    "E741",   # ambiguous variable name
+    "N806",   # variable name should be lowercase (for uppercase constants)
+    # FIXME: The following may introduce breaking changes, defer to later:
+    "N801",   # invalid-class-name (5 occurrences)
+    "W291",   # trailing-whitespace (4 occurrences)
+    "W293",   # blank-line-with-whitespace (4 occurrences)
+    "B904",   # raise-without-from-inside-except (3 occurrences)
+    "N803",   # invalid-argument-name (2 occurrences)
+    "N999",   # invalid-module-name (2 occurrences)
+]
+
+per-file-ignores = { "__init__.py" = ["F401"] }  # Allow unused imports in __init__.py
