@@ -1,15 +1,17 @@
 import heapq
 import logging
+import queue
+import threading
+import time
+
 import can
 from can import Listener
-import time
-import threading
-import queue
+
 from .controller_application import ControllerApplication
-from .parameter_group_number import ParameterGroupNumber
 from .j1939_21 import J1939_21
 from .j1939_22 import J1939_22
 from .message_id import FrameFormat
+from .parameter_group_number import ParameterGroupNumber
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +462,7 @@ class ElectronicControlUnit:
         :param bytearray data:
             Data of the PDU
         """
-        logger.debug("notify subscribers for PGN {}".format(pgn))
+        logger.debug(f"notify subscribers for PGN {pgn}")
         # Snapshot under lock so subscribe/unsubscribe from any thread is safe.
         with self._subscribers_lock:
             snapshot = list(self._subscribers)

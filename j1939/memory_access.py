@@ -1,6 +1,7 @@
-from enum import Enum
 import logging
 import threading
+from enum import Enum
+
 import j1939
 
 logger = logging.getLogger(__name__)

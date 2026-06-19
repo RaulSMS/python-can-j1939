@@ -1,7 +1,9 @@
-import pytest
-from test.helpers.feeder import Feeder
-import j1939
 import time
+
+import pytest
+
+import j1939
+from test.helpers.feeder import Feeder
 
 # fmt: off
 read_with_seed_key = [

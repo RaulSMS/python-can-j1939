@@ -1,8 +1,9 @@
-from .parameter_group_number import ParameterGroupNumber
-from .message_id import MessageId
 import logging
 import threading
 import time
+
+from .message_id import MessageId
+from .parameter_group_number import ParameterGroupNumber
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,9 @@
-from .parameter_group_number import ParameterGroupNumber
-from .message_id import MessageId, FrameFormat
 import logging
 import threading
 import time
+
+from .message_id import FrameFormat, MessageId
+from .parameter_group_number import ParameterGroupNumber
 
 logger = logging.getLogger(__name__)
 
@@ -324,8 +325,8 @@ class J1939_22:
         for cpg in cpg_list:
             priority = min(cpg['priority'], priority)
             data.append( (cpg['tos'] << 5) | (cpg['tf'] << 2) | ((cpg['cpgn'] >> 16) & 0x3) )
-            data.append( ((cpg['cpgn'] >> 8) & 0xFF) )
-            data.append( (cpg['cpgn'] & 0xFF) )
+            data.append( (cpg['cpgn'] >> 8) & 0xFF )
+            data.append( cpg['cpgn'] & 0xFF )
             data.append( cpg['data_length'] )
             data.extend( cpg['data'])
 

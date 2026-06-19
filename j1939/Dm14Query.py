@@ -1,5 +1,6 @@
-from enum import Enum
 import queue
+from enum import Enum
+
 import j1939
 
 

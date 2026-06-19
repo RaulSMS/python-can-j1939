@@ -1,5 +1,6 @@
 import logging
 import time
+
 import j1939
 
 logging.getLogger('j1939').setLevel(logging.DEBUG)
@@ -36,7 +37,7 @@ def ca_receive(priority, pgn, source, timestamp, data):
     :param bytearray data:
         Data of the PDU
     """
-    print("PGN {} length {}".format(pgn, len(data)))
+    print(f"PGN {pgn} length {len(data)}")
 
 def ca_timer_callback1(cookie):
     """Callback for sending messages

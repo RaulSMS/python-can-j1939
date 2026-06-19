@@ -171,7 +171,7 @@ def test_concurrent_add_remove_no_crash():
                          "Needs to be updated to allow more generous timing or use a more robust synchronization method."))
 def test_memory_access_event_latency():
     """MemoryAccess servicer thread responds to events within 5ms."""
-    from j1939.memory_access import MemoryAccess, DMState
+    from j1939.memory_access import DMState, MemoryAccess
 
     ecu = _make_ecu()
     ca = ecu.add_ca(name=j1939.Name(

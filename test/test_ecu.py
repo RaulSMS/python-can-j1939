@@ -1,8 +1,7 @@
 
 import can
+
 from test.helpers.feeder import Feeder
-
-
 
 #def test_connect(self):
 #    self.feeder.ecu.connect(bustype="virtual", channel=1)

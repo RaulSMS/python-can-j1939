@@ -1,5 +1,6 @@
-import j1939
 import logging
+
+import j1939
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +381,7 @@ class Dm11:
             # TODO: send acknowledge
 
     def _on_acknowledge(self, src_address, dest_address, pgn):
-        for subscriber in self._subscribers_ack_clear:
+        for _subscriber in self._subscribers_ack_clear:
             # TODO
             pass
 

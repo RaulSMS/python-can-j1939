@@ -1,7 +1,9 @@
 import logging
 import time
-import j1939
+
 from hexdump import hexdump
+
+import j1939
 
 logging.getLogger('j1939').setLevel(logging.DEBUG)
 logging.getLogger('can').setLevel(logging.DEBUG)

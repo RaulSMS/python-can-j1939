@@ -1,5 +1,6 @@
 import logging
 import time
+
 import j1939
 
 logging.getLogger('j1939').setLevel(logging.DEBUG)
@@ -19,7 +20,7 @@ def on_message(priority, pgn, sa, timestamp, data):
     :param bytearray data:
         Data of the PDU
     """
-    print("PGN {} length {}".format(pgn, len(data)))
+    print(f"PGN {pgn} length {len(data)}")
 
 def main():
     print("Initializing")
