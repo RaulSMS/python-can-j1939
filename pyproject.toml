@@ -45,7 +45,7 @@ test = [
 [project.urls]
 Homepage = "https://github.com/RaulSMS/python-can-j1939"
 "Bug Tracker" = "https://github.com/RaulSMS/python-can-j1939/issues"
-Documentation = "https://j1939.readthedocs.io/en/stable/"
+Documentation = "https://python-can-j1939.readthedocs.io/en/latest/"
 
 [tool.setuptools.dynamic]
 version = { attr = "j1939.version.__version__" }

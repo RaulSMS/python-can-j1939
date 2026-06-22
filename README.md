@@ -1,7 +1,7 @@
 # SAE J1939 for Python
 
-[![Latest Version on PyPi](https://img.shields.io/pypi/v/python-can-j1939)](https://pypi.python.org/pypi/python-can-j1939/)
-[![Documentation build Status](https://readthedocs.org/projects/j1939/badge/?version=latest)](https://j1939.readthedocs.io/en/latest/)
+[![Latest Version on PyPi](https://img.shields.io/pypi/v/python-can-j1939)](https://pypi.org/project/python-can-j1939/)
+[![Documentation build Status](https://readthedocs.org/projects/python-can-j1939/badge/?version=latest)](https://python-can-j1939.readthedocs.io/en/latest/)
 
 An implementation of the CAN SAE J1939 standard for Python. This is the
 first J1939-22 (J1939-FD) implementation!
@@ -66,7 +66,7 @@ think of PDUs as the CAN messages.
 - correct timeout and deadline handling
 - (under construction) almost complete testcoverage
 - diagnostic messages (see
-    <https://github.com/juergenH87/python-can-j1939/tree/master/examples/diagnostic_message.py>)
+    <https://github.com/RaulSMS/python-can-j1939/tree/master/examples/diagnostic_message.py>)
   - support of DM1 Tool and ECU functionaliy (all four SAE J1939-73
         SPN conversion methods: 1, 2, 3, 4)
   - support of DM11 Tool functionaliy
