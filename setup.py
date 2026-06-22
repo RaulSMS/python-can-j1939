@@ -18,10 +18,15 @@ setup(
     long_description_content_type='text/x-rst',
     license="MIT",
     platforms=["any"],
+    python_requires=">=3.10",
     classifiers=[
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
         "Intended Audience :: Developers",
         "Topic :: Scientific/Engineering"
     ],

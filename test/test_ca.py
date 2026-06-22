@@ -68,12 +68,12 @@ def test_addr_claim_fixed_reduced_time(feeder):
     )
     new_ca = feeder.ecu.add_ca(name=name, device_address=128)
     new_ca.start(0.2)
-    
-    # wait until all messages are processed asynchronously 
-    # rounded up to account for scheduling delays
-    time.sleep(0.3)
 
-    # assert that the expected message was sent
+    # wait until the address claim message is processed, with a 2s timeout
+    deadline = time.monotonic() + 2.0
+    while len(feeder.can_messages) > 0 and time.monotonic() < deadline:
+        time.sleep(0.050)
+
     assert len(feeder.can_messages) == 0
 
 

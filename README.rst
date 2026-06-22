@@ -80,6 +80,8 @@ Features
 Installation
 ------------
 
+Requires **Python 3.10 or later** and python-can_ >= 4.2.0.
+
 Install can-j1939 with pip::
 
     $ pip install can-j1939
