@@ -46,6 +46,8 @@ class DTC:
         else:
             if cm not in (1, 2, 3, 4):
                 raise ValueError(f"Invalid conversion method: {cm}. Must be 1, 2, 3, or 4.")
+            if spn is None or fmi is None:
+                raise ValueError("spn and fmi must be provided when dtc is None")
             self._spn = spn
             self._fmi = fmi
             self._oc = oc

@@ -1,5 +1,8 @@
+from __future__ import annotations
+from collections.abc import Callable
 from enum import Enum
 import logging
+from typing import Optional
 import threading
 import j1939
 
@@ -170,6 +173,8 @@ class MemoryAccess:
                             self.state = DMState.WAIT_RESPONSE
                             self._ca.unsubscribe(self._listen_for_dm14)
                             if self._proceed_function is not None:
+                                if self.server.address is None:
+                                    raise RuntimeError("server address must be set before calling proceed function")
                                 proceed = self._proceed_function(
                                     self.server.command,
                                     int.from_bytes(
@@ -197,10 +202,16 @@ class MemoryAccess:
                     if self.server.state == j1939.ResponseState.SEND_PROCEED:
                         self.state = DMState.WAIT_RESPONSE
                         if self.seed_security:
+                            if self.server.seed is None:
+                                raise RuntimeError("server seed must be set before verifying key")
+                            if self.server.key is None:
+                                raise RuntimeError("server key must be set before verifying key")
                             if self.server.verify_key(
                                 self.server.seed, self.server.key
                             ):
                                 if self._proceed_function is not None:
+                                    if self.server.address is None:
+                                        raise RuntimeError("server address must be set before calling proceed function")
                                     proceed = self._proceed_function(
                                         self.server.command,
                                         int.from_bytes(
@@ -238,11 +249,11 @@ class MemoryAccess:
     def respond(
         self,
         proceed: bool,
-        data: list = None,
+        data: Optional[list] = None,
         error: int = 0xFFFFFF,
         edcp: int = 0xFF,
         max_timeout: int = 3,
-    ) -> list:
+    ) -> Optional[list]:
         """
         Responds with requested data and error code, if applicable, to a read request
 
@@ -334,44 +345,44 @@ class MemoryAccess:
             )
             self.reset()
 
-    def set_seed_generator(self, seed_generator: callable) -> None:
+    def set_seed_generator(self, seed_generator: Callable[[], int]) -> None:
         """
         Sets seed generator function to use
         :param seed_generator: seed generator function
         """
         self.server.set_seed_generator(seed_generator)
 
-    def set_seed_key_algorithm(self, algorithm: callable) -> None:
+    def set_seed_key_algorithm(self, algorithm: Callable[[int], int]) -> None:
         """
         Sets seed-key algorithm to be used for key generation
 
-        :param callable algorithm: seed-key algorithm
+        :param algorithm: seed-key algorithm
         """
         self.seed_security = True
         self.query.set_seed_key_algorithm(algorithm)
         self.server.set_seed_key_algorithm(algorithm)
 
-    def set_verify_key(self, verify_key: callable) -> None:
+    def set_verify_key(self, verify_key: Callable[..., bool]) -> None:
         """
         Sets verify key function to be used for verifying the key
 
-        :param callable verify_key: verify key function
+        :param verify_key: verify key function
         """
         self.server.set_verify_key(verify_key)
 
-    def set_notify(self, notify: callable) -> None:
+    def set_notify(self, notify: Callable[[], None]) -> None:
         """
         Sets notify function to be used for notifying the user of memory accesses
 
-        :param callable notify: notify function
+        :param notify: notify function
         """
         self._notify_query_received = notify
 
-    def set_proceed(self, proceed: callable) -> None:
+    def set_proceed(self, proceed: Callable[..., bool]) -> None:
         """
         Sets proceed function to determine if a memory query is valid or not
 
-        :param callable proceed: proceed function
+        :param proceed: proceed function
         """
         self._proceed_function = proceed
 
