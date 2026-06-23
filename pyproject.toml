@@ -41,6 +41,10 @@ dependencies = [
 test = [
     "pytest >= 6.2.5",
 ]
+lint = [
+    "ruff",
+    "pyright",
+]
 
 [project.urls]
 Homepage = "https://github.com/RaulSMS/python-can-j1939"
