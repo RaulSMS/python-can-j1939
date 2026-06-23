@@ -58,6 +58,24 @@ Key rules enforced:
 - [ ] Changes that affect both J1939-21 and J1939-22 are applied to **both** `j1939/j1939_21.py` and `j1939/j1939_22.py`.
 - [ ] Public API additions are exported from `j1939/__init__.py`.
 
+## Release Process
+
+Releases are fully automated via GitHub Actions CI/CD pipelines but are strictly gated to maintainers to preserve package security.
+
+### Requesting a New Release
+If you are a contributor and believe a new version should be published (e.g., after a significant feature addition or bug fix has landed on master):
+1. Open a new Issue on GitHub requesting a release.
+2. Assign the issue to the project maintainer (RaulSMS).
+3. The maintainer will review the state of the master branch and initiate the release deployment sequence.
+
+### Maintainer Deployment Sequence (For Reference)
+Only RaulSMS has permission to publish releases to PyPI. The steps are:
+1. Update the version string inside j1939/version.py on the master branch.
+2. Push a semantic version tag matching the v* pattern:
+   git tag v2.1.0
+   git push origin v2.1.0
+3. The CI/CD system will automatically catch the tag push, execute all tests, generate a GitHub Release with an automated changelog, and securely upload the package distributions to PyPI.
+
 ## Architecture overview
 
 See [CLAUDE.md](CLAUDE.md) for a detailed description of the layered architecture (ECU → DLL → ControllerApplication), the threading model, and pointers to each module.
