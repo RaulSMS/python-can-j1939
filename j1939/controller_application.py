@@ -1,5 +1,6 @@
+from __future__ import annotations
 import logging
-
+from typing import Optional
 import j1939
 
 from .message_id import FrameFormat
@@ -54,10 +55,16 @@ class ControllerApplication:
             self._device_address_announced = j1939.ParameterGroupNumber.Address.NULL
             self._device_address = j1939.ParameterGroupNumber.Address.NULL
             self._device_address_state = ControllerApplication.State.NONE
-        self._ecu = None
+        self._ecu: Optional[j1939.ElectronicControlUnit] = None
         self._subscribers_request = []
         self._subscribers_acknowledge = []
         self._started = False
+
+    @property
+    def _ecu_ref(self) -> j1939.ElectronicControlUnit:
+        if self._ecu is None:
+            raise RuntimeError("CA is not associated with an ECU")
+        return self._ecu
 
     def associate_ecu(self, ecu):
         """Binds this CA to the ECU given
@@ -65,7 +72,6 @@ class ControllerApplication:
             The ECU this CA should be bound to.
             A j1939 :class:`j1939.ElectronicControlUnit` instance
         """
-        self._ecu : j1939.ElectronicControlUnit
         self._ecu = ecu
 
     def remove_ecu(self):
@@ -77,14 +83,14 @@ class ControllerApplication:
         :param callback:
             Function to call when message is received.
         """
-        self._ecu.subscribe(callback, self.message_acceptable)
+        self._ecu_ref.subscribe(callback, self.message_acceptable)
 
     def unsubscribe(self, callback):
         """Stop listening for message.
         :param callback:
             Function to call when message is received.
         """
-        self._ecu.unsubscribe(callback)
+        self._ecu_ref.unsubscribe(callback)
 
     def subscribe_request(self, callback):
         """Add the given callback to the request notification stream.
@@ -116,14 +122,14 @@ class ControllerApplication:
         :param callback:
             The callback function to call
         """
-        self._ecu.add_timer(delta_time, callback, cookie)
+        self._ecu_ref.add_timer(delta_time, callback, cookie)
 
     def remove_timer(self, callback):
         """Removes ALL entries from the timer event list for the given callback
         :param callback:
             The callback to be removed from the timer event list
         """
-        self._ecu.remove_timer(callback)
+        self._ecu_ref.remove_timer(callback)
 
     def register_dependent(self, dependent):
         """Register a helper whose ``stop()`` should be called on ECU shutdown.
@@ -134,7 +140,7 @@ class ControllerApplication:
         :param dependent:
             Any object exposing a no-arg ``stop()`` method.
         """
-        self._ecu.register_dependent(dependent)
+        self._ecu_ref.register_dependent(dependent)
 
     def unregister_dependent(self, dependent):
         """Remove a previously-registered dependent.
@@ -145,7 +151,7 @@ class ControllerApplication:
         :param dependent:
             The object previously passed to :meth:`register_dependent`.
         """
-        self._ecu.unregister_dependent(dependent)
+        self._ecu_ref.unregister_dependent(dependent)
 
     def start(self, claim_delay=0.5):
         """Starts the CA
@@ -156,7 +162,7 @@ class ControllerApplication:
         # check if we are not already started and there is an ecu connected
         if self._ecu and not self.started:
             self._started = True
-            self._ecu.add_timer(claim_delay, self._process_claim_async)
+            self._ecu_ref.add_timer(claim_delay, self._process_claim_async)
 
     def stop(self):
         """Stops the CA
@@ -164,7 +170,7 @@ class ControllerApplication:
         # check if we are already started and there is an ecu connected
         if self._ecu and self.started:
             self._started = False
-            self._ecu.remove_timer(self._process_claim_async)
+            self._ecu_ref.remove_timer(self._process_claim_async)
 
     def _process_claim_async(self, cookie):
         time_to_sleep = 0.500
@@ -190,7 +196,7 @@ class ControllerApplication:
             # do nothing
             pass
         # add new event with (possibly) new timeout value
-        self._ecu.add_timer(time_to_sleep, self._process_claim_async)
+        self._ecu_ref.add_timer(time_to_sleep, self._process_claim_async)
         # returning false deletes the event from the list
         return False
 
@@ -283,7 +289,7 @@ class ControllerApplication:
             raise RuntimeError("Could not send message unless address claiming has finished")
 
         mid = j1939.MessageId(priority=priority, parameter_group_number=parameter_group_number, source_address=self._device_address)
-        self._ecu.send_message(mid.can_id, True, data)
+        self._ecu_ref.send_message(mid.can_id, True, data)
 
     def send_pgn(self, data_page, pdu_format, pdu_specific, priority, data, time_limit=0, frame_format=FrameFormat.FEFF):
         """send a pgn
@@ -299,7 +305,7 @@ class ControllerApplication:
         if self.state != ControllerApplication.State.NORMAL:
             raise RuntimeError("Could not send message unless address claiming has finished")
 
-        return self._ecu.send_pgn(data_page, pdu_format, pdu_specific, priority, self._device_address, data, time_limit, frame_format)
+        return self._ecu_ref.send_pgn(data_page, pdu_format, pdu_specific, priority, self._device_address, data, time_limit, frame_format)
 
     def send_request(self, data_page, pgn, destination):
         """send a request message
@@ -315,7 +321,7 @@ class ControllerApplication:
             source_address = self._device_address
 
         data = [(pgn & 0xFF), ((pgn >> 8) & 0xFF), ((pgn >> 16) & 0xFF)]
-        self._ecu.send_pgn(data_page, (j1939.ParameterGroupNumber.PGN.REQUEST >> 8) & 0xFF, destination & 0xFF, 6, source_address, data)
+        self._ecu_ref.send_pgn(data_page, (j1939.ParameterGroupNumber.PGN.REQUEST >> 8) & 0xFF, destination & 0xFF, 6, source_address, data)
 
     def _send_address_claimed(self, address):
         # TODO: Normally the (initial) address claimed message must not be an auto repeat message.
@@ -324,7 +330,7 @@ class ControllerApplication:
         pgn = j1939.ParameterGroupNumber(0, 238, j1939.ParameterGroupNumber.Address.GLOBAL)
         mid = j1939.MessageId(priority=6, parameter_group_number=pgn.value, source_address=address)
         data = self._name.bytes
-        self._ecu.send_message(mid.can_id, True, data)
+        self._ecu_ref.send_message(mid.can_id, True, data)
 
     def on_request(self, src_address, dest_address, pgn):
         """Callback for PGN requests

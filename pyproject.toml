@@ -43,7 +43,8 @@ test = [
 ]
 lint = [
     "ruff",
-    "pyright",
+    "pyright >= 1.1",
+    "vermin",
 ]
 
 [project.urls]

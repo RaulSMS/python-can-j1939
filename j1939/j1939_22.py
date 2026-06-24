@@ -1,3 +1,6 @@
+from .parameter_group_number import ParameterGroupNumber
+from .message_id import MessageId, FrameFormat
+from enum import IntEnum
 import logging
 import threading
 import time
@@ -8,7 +11,7 @@ from .parameter_group_number import ParameterGroupNumber
 logger = logging.getLogger(__name__)
 
 class J1939_22:
-    class TpControlType:
+    class TpControlType(IntEnum):
         RTS        = 0   # Destination Specific Request_To_Send
         CTS        = 1   # Destination Specific Clear_To_Send
         EOM_STATUS = 2   # Destination Specific or Global Destination End_of_Message Status
@@ -16,7 +19,7 @@ class J1939_22:
         BAM        = 4   # Global Destination Broadcast Announce Message
         ABORT      = 15  # Destination Specific Connection Abort
 
-    class Adt: # assurance data type
+    class Adt(IntEnum): # assurance data type
         NO_ADT = 0              # no assurance Data
         MS_CS = 1               # Manufacturer specific cybersecurity assurance data
         MS_FS = 2               # Manufacturer specific functional safety assurance
@@ -733,7 +736,7 @@ class J1939_22:
         self.__send_tp_cm(src_address, ParameterGroupNumber.Address.GLOBAL, self.TpControlType.BAM, session_num, message_size, num_segments, 0xFF , 0, pgn_value, priority)
 
     def __send_tp_cm(self,  src_address, dest_address,
-                            TpControlType : TpControlType, session_num, message_size,
+                            tp_control_type: TpControlType, session_num, message_size,
                             num_segments, # total number of segments or next segment number to be sent
                             byte_7, # maximum number of segments or num of segments that can be sent or assurance data Size
                             byte_8, # assurance data type or request code or teason code:
@@ -744,7 +747,7 @@ class J1939_22:
         mid = MessageId(priority=priority, parameter_group_number=pgn_tp_cm.value, source_address=src_address)
 
         data = [0] * 12
-        data[0]  = ( (TpControlType & 0xF) | ((session_num & 0xF) << 4))
+        data[0]  = ( (tp_control_type & 0xF) | ((session_num & 0xF) << 4))
         data[1]  = (  message_size & 0xFF )
         data[2]  = ( (message_size >> 8)  & 0xFF )
         data[3]  = ( (message_size >> 16) & 0xFF )
