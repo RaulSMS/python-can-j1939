@@ -50,10 +50,21 @@ Key rules enforced:
 - Keep commits focused — one logical change per commit.
 - Write commit messages in the imperative mood: `fix transport protocol timeout`, not `fixed timeout`.
 
+## Type checking
+
+This project uses [Pyright](https://github.com/microsoft/pyright) for static type analysis.
+
+```bash
+pyright
+```
+
+Configuration is in `pyrightconfig.json` (covers `j1939/` only, `basic` mode). Fix any new errors introduced by your change before opening a PR.
+
 ## Pull request checklist
 
 - [ ] Tests pass: `pytest . --pyargs`
 - [ ] No lint violations: `ruff check .`
+- [ ] No type errors: `pyright`
 - [ ] New protocol behaviour is covered by tests in `test/` using the `Feeder` fixture (see `test/helpers/feeder.py`).
 - [ ] Changes that affect both J1939-21 and J1939-22 are applied to **both** `j1939/j1939_21.py` and `j1939/j1939_22.py`.
 - [ ] Public API additions are exported from `j1939/__init__.py`.
