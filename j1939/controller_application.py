@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 import logging
-from typing import Optional
+
 import j1939
 
 from .message_id import FrameFormat
@@ -55,7 +56,7 @@ class ControllerApplication:
             self._device_address_announced = j1939.ParameterGroupNumber.Address.NULL
             self._device_address = j1939.ParameterGroupNumber.Address.NULL
             self._device_address_state = ControllerApplication.State.NONE
-        self._ecu: Optional[j1939.ElectronicControlUnit] = None
+        self._ecu: j1939.ElectronicControlUnit | None = None
         self._subscribers_request = []
         self._subscribers_acknowledge = []
         self._started = False

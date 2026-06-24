@@ -1,10 +1,9 @@
 
 from __future__ import annotations
-from collections.abc import Callable
-from enum import Enum
-from typing import Optional
+
 import queue
 import secrets
+from collections.abc import Callable
 from enum import Enum
 
 import j1939
@@ -30,13 +29,13 @@ class DM14Server:
 
         self._ca = ca
         self._busy = False
-        self.sa: Optional[int] = None
+        self.sa: int | None = None
         self.state = ResponseState.IDLE
-        self._key_from_seed: Optional[Callable[[int], int]] = None
+        self._key_from_seed: Callable[[int], int] | None = None
         self.data_queue: queue.Queue = queue.Queue()
         self._seed_generator: Callable[[], int] = self.generate_seed
-        self._verify_key: Optional[Callable[..., bool]] = None
-        self.address: Optional[bytearray] = None
+        self._verify_key: Callable[..., bool] | None = None
+        self.address: bytearray | None = None
         self.length = 8
         self.proceed = False
         self.data: bytearray | list = []
@@ -184,8 +183,8 @@ class DM14Server:
         object_count: int,
         sa: int,
         pgn: int = 55296, # FIXME: we should use constants, like we used to: j1939.ParameterGroupNumber.PGN.DM15, but we get into circular imports errors. https://github.com/RaulSMS/python-can-j1939/issues/24
-        error: int = None,
-        edcp: int = None,
+        error: int | None = None,
+        edcp: int | None = None,
 
     ) -> None:
         """
@@ -383,7 +382,7 @@ class DM14Server:
         error: int = 0xFFFFFF,
         edcp: int = 0xFF,
         max_timeout: int = 3,
-    ) -> Optional[list]:
+    ) -> list | None:
         """
         Respond to DM14 query with the requested data or confimation of operation is good to proceed
         :param bool proceed: whether the operation is good to proceed
@@ -408,7 +407,7 @@ class DM14Server:
         else:
             self.state = ResponseState.SEND_ERROR
         self._wait_for_data()
-        mem_data: Optional[list] = None
+        mem_data: list | None = None
         if self.state == ResponseState.WAIT_FOR_DM16:
             try:
                 mem_data = self.data_queue.get(block=True, timeout=max_timeout)

@@ -1,9 +1,7 @@
-from .parameter_group_number import ParameterGroupNumber
-from .message_id import MessageId, FrameFormat
-from enum import IntEnum
 import logging
 import threading
 import time
+from enum import IntEnum
 
 from .message_id import FrameFormat, MessageId
 from .parameter_group_number import ParameterGroupNumber
@@ -638,7 +636,6 @@ class J1939_22:
             return
 
         src_address = mid.source_address
-        data[0] & 0xF # Data Transfer Format Indicator
         session_num = (data[0] >> 4) & 0xF
         segment_num = (data[1] & 0xFF) | ((data[2]  & 0xFF) << 8) | ((data[3] & 0xFF)  << 16)
 
