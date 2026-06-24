@@ -206,6 +206,10 @@ class ElectronicControlUnit:
 
         Must be overridden in a subclass if a custom interface is used.
         """
+        if self._notifier is None:
+            raise RuntimeError("notifier is not set; call connect() before disconnect()")
+        if self._bus is None:
+            raise RuntimeError("bus is not set; call connect() before disconnect()")
         self._notifier.stop()
         self._bus.shutdown()
         self._bus = None
@@ -301,6 +305,8 @@ class ElectronicControlUnit:
     def remove_notifier(self):
         """Remove the notifier from the ECU.
         """
+        if self._notifier is None:
+            return
         for listener in self._listeners:
             self._notifier.remove_listener(listener)
         self._notifier = None

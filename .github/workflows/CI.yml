@@ -26,11 +26,14 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install vermin
-        run: pip install vermin
+      - name: Install dependencies
+        run: pip install vermin -e .[lint]
 
       - name: Check minimum Python version (must not exceed 3.10)
         run: vermin --target=3.10- --backport enum j1939/
+
+      - name: Run Pyright
+        run: pyright
 
   test:
     runs-on: ${{ matrix.os }}
