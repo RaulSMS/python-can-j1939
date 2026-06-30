@@ -420,7 +420,14 @@ class J1939_21:
                 # finished reassembly
                 if dest_address != ParameterGroupNumber.Address.GLOBAL:
                     self.__send_tp_eom_ack(dest_address, src_address, self._rcv_buffer[buffer_hash]['message_size'], self._rcv_buffer[buffer_hash]['num_packages'], self._rcv_buffer[buffer_hash]['pgn'])
-                self.__notify_subscribers(mid.priority, self._rcv_buffer[buffer_hash]['pgn'], src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
+                if self._rcv_buffer[buffer_hash]['pgn'] == ParameterGroupNumber.PGN.COMMANDED_ADDRESS:
+                    # route Commanded Address (J1939-81) to the registered CAs and
+                    # consume it (do not forward to generic subscribers, consistent
+                    # with ADDRESSCLAIM/REQUEST handling in notify())
+                    for ca in self._cas:
+                        ca._process_commanded_address(src_address, self._rcv_buffer[buffer_hash]['data'], timestamp)
+                else:
+                    self.__notify_subscribers(mid.priority, self._rcv_buffer[buffer_hash]['pgn'], src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
                 del self._rcv_buffer[buffer_hash]
                 self.__job_thread_wakeup()
                 return
