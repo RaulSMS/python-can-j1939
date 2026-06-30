@@ -297,22 +297,42 @@ class ControllerApplication:
 
         Reuses the existing claim state machine: an Address Claimed message is
         transmitted immediately at the new source address. Addresses in the
-        128..247 range enter WAIT_VETO (resolved to NORMAL by the recurring
+        128..247 range enter WAIT_VETO (resolved to NORMAL by the
         :meth:`_process_claim_async` timer, contention by
         :meth:`_process_addressclaim`); all other addresses claim immediately.
 
         :param int new_address:
-            The source address to claim.
+            The source address to claim. Must be a valid (claimable) source
+            address in the range 0..253; NULL (254) and GLOBAL (255) are
+            rejected.
+
+        :return:
+            True if the claim procedure was started, otherwise False.
         """
+        # Only 0..253 are valid (claimable) source addresses. NULL (254) and
+        # GLOBAL (255) must never be claimed - doing so would put the CA into an
+        # invalid state.
+        if new_address < 0 or new_address > 253:
+            logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
+            return False
+
         self._device_address_preferred = new_address
         self._device_address_announced = new_address
         self._send_address_claimed(new_address)
         if new_address > 127 and new_address < 248:
             self._device_address_state = ControllerApplication.State.WAIT_VETO
+            # Re-arm the veto timeout so the WAIT_VETO -> NORMAL transition
+            # happens after the veto window rather than waiting for the next
+            # periodic claim tick. Only relevant when the periodic claim timer
+            # is already running (i.e. the CA has been started).
+            if self.started:
+                self._ecu_ref.remove_timer(self._process_claim_async)
+                self._ecu_ref.add_timer(ControllerApplication.ClaimTimeout.VETO, self._process_claim_async)
         else:
             # addresses from 0..127 and 248..253 claim immediately
             self._device_address = new_address
             self._device_address_state = ControllerApplication.State.NORMAL
+        return True
 
     def _process_request(self, mid, dest_address, data, timestamp):
         """Processes a REQUEST message

@@ -323,3 +323,54 @@ def test_commanded_address_not_delivered_to_subscribers(feeder):
     feeder.ecu.unsubscribe(on_message)
 
     assert j1939.ParameterGroupNumber.PGN.COMMANDED_ADDRESS not in received_pgns
+
+
+def test_commanded_address_invalid_sa_ignored(feeder):
+    """A Commanded Address that commands a non-claimable source address (NULL
+    254 / GLOBAL 255) is ignored; the CA keeps its current address and does not
+    transmit an Address Claimed for the invalid SA.
+    """
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF80, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),  # Address Claimed @128
+        (Feeder.MsgType.CANRX, 0x1CECFF01, [32, 9, 0, 2, 255, 216, 254, 0], 0.0),          # TP.CM BAM, PGN 65240
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [1, 135, 214, 82, 83, 130, 201, 254], 0.0),     # TP.DT 1
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [2, 210, 254, 255, 255, 255, 255, 255], 0.0),   # TP.DT 2 (new SA = NULL 254)
+    ]
+
+    name = _commanded_address_name(arbitrary_address_capable=1)
+    new_ca = feeder.ecu.add_ca(name=name, device_address=128)
+    new_ca.start()
+
+    while len(feeder.can_messages) > 0:
+        time.sleep(0.500)
+    time.sleep(0.500)
+
+    assert new_ca.state == j1939.ControllerApplication.State.NORMAL
+    assert new_ca.device_address == 128
+
+
+def test_commanded_address_in_veto_range_claims_after_veto(feeder):
+    """A Commanded Address for an address in the 128..247 range enters WAIT_VETO
+    and resolves to NORMAL at the commanded address. The re-armed veto timeout
+    makes the transition happen within the veto window rather than at the next
+    periodic claim tick.
+    """
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF80, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),  # Address Claimed @128
+        (Feeder.MsgType.CANRX, 0x1CECFF01, [32, 9, 0, 2, 255, 216, 254, 0], 0.0),          # TP.CM BAM, PGN 65240
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [1, 135, 214, 82, 83, 130, 201, 254], 0.0),     # TP.DT 1
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [2, 210, 200, 255, 255, 255, 255, 255], 0.0),   # TP.DT 2 (new SA = 200)
+        (Feeder.MsgType.CANTX, 0x18EEFFC8, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),   # Address Claimed @200
+    ]
+
+    name = _commanded_address_name(arbitrary_address_capable=1)
+    new_ca = feeder.ecu.add_ca(name=name, device_address=128)
+    new_ca.start()
+
+    while len(feeder.can_messages) > 0:
+        time.sleep(0.500)
+    # allow the (re-armed) veto window to elapse
+    time.sleep(0.500)
+
+    assert new_ca.state == j1939.ControllerApplication.State.NORMAL
+    assert new_ca.device_address == 200
