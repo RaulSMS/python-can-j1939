@@ -6,8 +6,10 @@ large messages into transport protocol segments of 60 bytes each.
 """
 import pytest
 
+import j1939
 from j1939.j1939_22 import J1939_22
-from j1939.message_id import FrameFormat
+from j1939.message_id import FrameFormat, MessageId
+from j1939.parameter_group_number import ParameterGroupNumber
 
 
 class TestChunkingAlgorithm:
@@ -170,3 +172,177 @@ class TestJ1939_22Integration:
         
         assert buffer['num_segments'] == expected_segments
         assert len(buffer['data']) == expected_segments
+
+
+class _RecordingCA:
+    """Minimal CA stub that records Commanded Address routing calls."""
+
+    def __init__(self):
+        self.commanded = []
+
+    def _process_commanded_address(self, src_address, data, timestamp):
+        self.commanded.append((src_address, list(data), timestamp))
+
+    def message_acceptable(self, dest_address):
+        return True
+
+
+class TestCommandedAddressRouting:
+    """J1939-22 routing of Commanded Address (PGN 65240) to the CAs.
+
+    A 9-byte Commanded Address may arrive either inside a Multi-PG frame or via
+    FD-TP reassembly; both completion points must route to the CAs and consume
+    the message (no delivery to generic subscribers).
+    """
+
+    COMMANDER_SA = 0xF9
+
+    @staticmethod
+    def _make_dll(notify_record):
+        return J1939_22(
+            send_message=lambda *a, **k: None,
+            job_thread_wakeup=lambda: None,
+            notify_subscribers=lambda *a: notify_record.append(a),
+            max_cmdt_packets=16,
+            minimum_tp_rts_cts_dt_interval=None,
+            minimum_tp_bam_dt_interval=0.010,
+            ecu_is_message_acceptable=lambda dest: True,
+        )
+
+    @staticmethod
+    def _name_bytes():
+        name = j1939.Name(
+            arbitrary_address_capable=1,
+            industry_group=j1939.Name.IndustryGroup.Industrial,
+            vehicle_system_instance=2,
+            vehicle_system=127,
+            function=201,
+            function_instance=16,
+            ecu_instance=2,
+            manufacturer_code=666,
+            identity_number=1234567,
+        )
+        return name.bytes
+
+    def test_commanded_address_routed_from_multi_pg(self):
+        """A Commanded Address carried in a Multi-PG frame is routed to the CAs
+        and not delivered to generic subscribers.
+        """
+        notify = []
+        dll = self._make_dll(notify)
+        ca = _RecordingCA()
+        dll.add_ca(ca)
+
+        payload = self._name_bytes() + [100]  # NAME + new SA 100
+        cpgn = ParameterGroupNumber.PGN.COMMANDED_ADDRESS  # 65240 / 0xFED8
+        # C-PG header: tos=2, tf=0
+        frame = [
+            (2 << 5) | (0 << 2) | ((cpgn >> 16) & 0x3),
+            (cpgn >> 8) & 0xFF,
+            cpgn & 0xFF,
+            len(payload),
+        ] + payload
+
+        mid = MessageId(
+            priority=7,
+            parameter_group_number=ParameterGroupNumber.PGN.FEFF_MULTI_PG | 0xFF,
+            source_address=self.COMMANDER_SA,
+        )
+        dll._process_multi_pg(mid, ParameterGroupNumber.Address.GLOBAL, frame, 1.0)
+
+        assert len(ca.commanded) == 1
+        assert ca.commanded[0][0] == self.COMMANDER_SA
+        assert ca.commanded[0][1] == payload
+        # consumed: not forwarded to generic subscribers
+        assert notify == []
+
+    def test_other_pgn_in_multi_pg_still_delivered_to_subscribers(self):
+        """A non-Commanded-Address PGN in a Multi-PG frame is still delivered to
+        subscribers (routing change must not swallow other PGNs).
+        """
+        notify = []
+        dll = self._make_dll(notify)
+        ca = _RecordingCA()
+        dll.add_ca(ca)
+
+        payload = [1, 2, 3, 4]
+        cpgn = 0xFEEE  # some broadcast PGN, not Commanded Address
+        frame = [
+            (2 << 5) | (0 << 2) | ((cpgn >> 16) & 0x3),
+            (cpgn >> 8) & 0xFF,
+            cpgn & 0xFF,
+            len(payload),
+        ] + payload
+
+        mid = MessageId(
+            priority=7,
+            parameter_group_number=ParameterGroupNumber.PGN.FEFF_MULTI_PG | 0xFF,
+            source_address=self.COMMANDER_SA,
+        )
+        dll._process_multi_pg(mid, ParameterGroupNumber.Address.GLOBAL, frame, 1.0)
+
+        assert ca.commanded == []
+        assert len(notify) == 1
+        # notify args: (priority, pgn, src, dest, timestamp, data)
+        assert notify[0][1] == cpgn
+        assert notify[0][5] == payload
+
+    def test_commanded_address_routed_from_fd_tp_bam(self):
+        """A Commanded Address reassembled via FD-TP (BAM) is routed to the CAs
+        on EOM_STATUS and not delivered to generic subscribers.
+        """
+        notify = []
+        dll = self._make_dll(notify)
+        ca = _RecordingCA()
+        dll.add_ca(ca)
+
+        payload = self._name_bytes() + [100]  # NAME + new SA 100
+        pgn = ParameterGroupNumber.PGN.COMMANDED_ADDRESS
+        session = 0
+        message_size = len(payload)  # 9 bytes -> 1 segment
+        num_segments = 1
+        dest = ParameterGroupNumber.Address.GLOBAL
+
+        cm_mid = MessageId(
+            priority=7,
+            parameter_group_number=(ParameterGroupNumber.PGN.FD_TP_CM & 0x1FF00) | dest,
+            source_address=self.COMMANDER_SA,
+        )
+        dt_mid = MessageId(
+            priority=7,
+            parameter_group_number=(ParameterGroupNumber.PGN.FD_TP_DT & 0x1FF00) | dest,
+            source_address=self.COMMANDER_SA,
+        )
+
+        # FD.TP.CM BAM
+        cm_bam = [
+            (J1939_22.TpControlType.BAM & 0xF) | ((session & 0xF) << 4),
+            message_size & 0xFF, (message_size >> 8) & 0xFF, (message_size >> 16) & 0xFF,
+            num_segments & 0xFF, (num_segments >> 8) & 0xFF, (num_segments >> 16) & 0xFF,
+            0xFF, 0x00,
+            pgn & 0xFF, (pgn >> 8) & 0xFF, (pgn >> 16) & 0xFF,
+        ]
+        dll._process_tp_cm(cm_mid, dest, cm_bam, 1.0)
+
+        # FD.TP.DT segment 1
+        dt = [
+            (0 & 0xF) | ((session & 0xF) << 4),
+            1, 0, 0,
+        ] + payload
+        dll._process_tp_dt(dt_mid, dest, dt, 1.0)
+
+        # FD.TP.CM EOM_STATUS triggers delivery
+        cm_eom = [
+            (J1939_22.TpControlType.EOM_STATUS & 0xF) | ((session & 0xF) << 4),
+            message_size & 0xFF, (message_size >> 8) & 0xFF, (message_size >> 16) & 0xFF,
+            num_segments & 0xFF, (num_segments >> 8) & 0xFF, (num_segments >> 16) & 0xFF,
+            0x00, 0x00,
+            pgn & 0xFF, (pgn >> 8) & 0xFF, (pgn >> 16) & 0xFF,
+        ]
+        dll._process_tp_cm(cm_mid, dest, cm_eom, 1.0)
+
+        assert len(ca.commanded) == 1
+        assert ca.commanded[0][0] == self.COMMANDER_SA
+        assert ca.commanded[0][1] == payload
+        # consumed: not forwarded to generic subscribers
+        assert notify == []
