@@ -574,7 +574,14 @@ class J1939_22:
                     return
                 pgn = self._rcv_buffer[buffer_hash]['pgn']
                 if (self._rcv_buffer[buffer_hash]['message_size'] == message_size) and (self._rcv_buffer[buffer_hash]['num_segments'] == segment_num):
-                    self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
+                    if pgn == ParameterGroupNumber.PGN.COMMANDED_ADDRESS:
+                        # route Commanded Address (J1939-81) to the registered CAs
+                        # and consume it (do not forward to generic subscribers,
+                        # consistent with ADDRESSCLAIM/REQUEST handling in notify())
+                        for ca in self._cas:
+                            ca._process_commanded_address(src_address, self._rcv_buffer[buffer_hash]['data'], timestamp)
+                    else:
+                        self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
                     if dest_address != ParameterGroupNumber.Address.GLOBAL:
                         self.__send_tp_eom_ack(dest_address, src_address, session_num, message_size, segment_num, pgn)
                 else:
@@ -708,7 +715,15 @@ class J1939_22:
             payload_length = (data[3] & 0xFF)
             if (tos == 2) and (trailer_format == 0):
                 # SAE J1939 with no assurance data
-                self.__notify_subscribers(mid.priority, cpgn, src_address, dest_address, timestamp, data[4:(4+payload_length)].copy())
+                payload = data[4:(4+payload_length)].copy()
+                if cpgn == ParameterGroupNumber.PGN.COMMANDED_ADDRESS:
+                    # route Commanded Address (J1939-81) to the registered CAs and
+                    # consume it (do not forward to generic subscribers, consistent
+                    # with ADDRESSCLAIM/REQUEST handling in notify())
+                    for ca in self._cas:
+                        ca._process_commanded_address(src_address, payload, timestamp)
+                else:
+                    self.__notify_subscribers(mid.priority, cpgn, src_address, dest_address, timestamp, payload)
             else:
                 # TODO
                 print('other tos/tf formats currently not supported')
