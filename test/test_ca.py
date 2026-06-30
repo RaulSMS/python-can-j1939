@@ -204,3 +204,122 @@ def test_bypass_address_claim_with_address_zero(feeder):
     ca = j1939.ControllerApplication(name=name, device_address_preferred=0x00, bypass_address_claim=True)
     assert ca.state == j1939.ControllerApplication.State.NORMAL
     assert ca.device_address == 0x00
+
+
+def _commanded_address_name(arbitrary_address_capable=0):
+    """NAME used by the Commanded Address tests.
+
+    With arbitrary_address_capable=0 the NAME serializes to
+    [135, 214, 82, 83, 130, 201, 254, 82]; with =1 only the most significant
+    byte changes (bit 63 set) to 210.
+    """
+    return j1939.Name(
+        arbitrary_address_capable=arbitrary_address_capable,
+        industry_group=j1939.Name.IndustryGroup.Industrial,
+        vehicle_system_instance=2,
+        vehicle_system=127,
+        function=201,
+        function_instance=16,
+        ecu_instance=2,
+        manufacturer_code=666,
+        identity_number=1234567,
+    )
+
+
+def test_commanded_address_claims_new_address(feeder):
+    """A BAM Commanded Address (PGN 65240) whose NAME matches an
+    arbitrary-address-capable CA causes that CA to claim the new address.
+    The new address (100) is < 128 so it is claimed immediately.
+    """
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF80, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),  # Address Claimed @128
+        (Feeder.MsgType.CANRX, 0x1CECFF01, [32, 9, 0, 2, 255, 216, 254, 0], 0.0),          # TP.CM BAM, PGN 65240, 9 bytes, 2 packets
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [1, 135, 214, 82, 83, 130, 201, 254], 0.0),     # TP.DT 1 (NAME bytes 0..6)
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [2, 210, 100, 255, 255, 255, 255, 255], 0.0),   # TP.DT 2 (NAME byte 7 + new SA 100)
+        (Feeder.MsgType.CANTX, 0x18EEFF64, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),   # Address Claimed @100
+    ]
+
+    name = _commanded_address_name(arbitrary_address_capable=1)
+    new_ca = feeder.ecu.add_ca(name=name, device_address=128)
+    new_ca.start()
+
+    while len(feeder.can_messages) > 0:
+        time.sleep(0.500)
+    time.sleep(0.500)
+
+    assert new_ca.state == j1939.ControllerApplication.State.NORMAL
+    assert new_ca.device_address == 100
+
+
+def test_commanded_address_ignored_for_other_name(feeder):
+    """A Commanded Address with a NAME that does not match the CA is ignored."""
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF80, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),  # Address Claimed @128
+        (Feeder.MsgType.CANRX, 0x1CECFF01, [32, 9, 0, 2, 255, 216, 254, 0], 0.0),          # TP.CM BAM, PGN 65240
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [1, 136, 214, 82, 83, 130, 201, 254], 0.0),     # TP.DT 1 (NAME byte 0 differs)
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [2, 210, 100, 255, 255, 255, 255, 255], 0.0),   # TP.DT 2
+    ]
+
+    name = _commanded_address_name(arbitrary_address_capable=1)
+    new_ca = feeder.ecu.add_ca(name=name, device_address=128)
+    new_ca.start()
+
+    while len(feeder.can_messages) > 0:
+        time.sleep(0.500)
+    time.sleep(0.500)
+
+    assert new_ca.device_address == 128
+
+
+def test_commanded_address_ignored_when_not_arbitrary_capable(feeder):
+    """A CA that is not arbitrary-address-capable (default policy) does not
+    adopt a matching Commanded Address.
+    """
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF80, [135, 214, 82, 83, 130, 201, 254, 82], 0.0),   # Address Claimed @128
+        (Feeder.MsgType.CANRX, 0x1CECFF01, [32, 9, 0, 2, 255, 216, 254, 0], 0.0),          # TP.CM BAM, PGN 65240
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [1, 135, 214, 82, 83, 130, 201, 254], 0.0),     # TP.DT 1
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [2, 82, 100, 255, 255, 255, 255, 255], 0.0),    # TP.DT 2 (matching NAME, new SA 100)
+    ]
+
+    name = _commanded_address_name(arbitrary_address_capable=0)
+    new_ca = feeder.ecu.add_ca(name=name, device_address=128)
+    new_ca.start()
+
+    while len(feeder.can_messages) > 0:
+        time.sleep(0.500)
+    time.sleep(0.500)
+
+    assert new_ca.device_address == 128
+
+
+def test_commanded_address_not_delivered_to_subscribers(feeder):
+    """Commanded Address is consumed by the CA and not forwarded to generic
+    subscribers.
+    """
+    received_pgns = []
+
+    def on_message(priority, pgn, sa, timestamp, data):
+        received_pgns.append(pgn)
+
+    feeder.ecu.subscribe(on_message)
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF80, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),  # Address Claimed @128
+        (Feeder.MsgType.CANRX, 0x1CECFF01, [32, 9, 0, 2, 255, 216, 254, 0], 0.0),          # TP.CM BAM, PGN 65240
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [1, 135, 214, 82, 83, 130, 201, 254], 0.0),     # TP.DT 1
+        (Feeder.MsgType.CANRX, 0x1CEBFF01, [2, 210, 100, 255, 255, 255, 255, 255], 0.0),   # TP.DT 2
+        (Feeder.MsgType.CANTX, 0x18EEFF64, [135, 214, 82, 83, 130, 201, 254, 210], 0.0),   # Address Claimed @100
+    ]
+
+    name = _commanded_address_name(arbitrary_address_capable=1)
+    new_ca = feeder.ecu.add_ca(name=name, device_address=128)
+    new_ca.start()
+
+    while len(feeder.can_messages) > 0:
+        time.sleep(0.500)
+    time.sleep(0.500)
+
+    feeder.ecu.unsubscribe(on_message)
+
+    assert j1939.ParameterGroupNumber.PGN.COMMANDED_ADDRESS not in received_pgns
