@@ -255,6 +255,65 @@ class ControllerApplication:
                     # we are in the middle of the claim-process
                     self._send_address_claimed(self._device_address_announced)
 
+    def accepts_commanded_address(self):
+        """Whether this CA honors a Commanded Address (J1939-81).
+
+        Defaults to the NAME's Arbitrary Address Capable bit; override to
+        support other address-configurable device classes that the NAME alone
+        cannot represent (e.g. Command Configurable).
+        """
+        return bool(self._name.arbitrary_address_capable)
+
+    def _process_commanded_address(self, src_address, data, timestamp):
+        """Processes a Commanded Address message (J1939-81, PGN 65240).
+
+        The Commanded Address assigns a specific source address to the device
+        identified by the embedded 64-bit NAME. If the NAME matches ours and we
+        accept the command, run the address-claim procedure at the commanded
+        address.
+
+        :param int src_address:
+            The source address the Commanded Address was sent from.
+        :param bytearray data:
+            The reassembled 9-byte payload (bytes 0-7: NAME, byte 8: new SA).
+        :param float timestamp:
+            The timestamp the message was received in fractions of Epoch-Seconds.
+        """
+        if len(data) < 9:
+            return
+        commanded_name = j1939.Name(bytes=bytes(data[0:8]))
+        new_address = data[8]
+        if commanded_name.value != self._name.value:
+            # not addressed to this CA
+            return
+        if not self.accepts_commanded_address():
+            logger.info("Ignoring Commanded Address for SA '%d': not accepted by policy", new_address)
+            return
+        logger.info("Received Commanded Address: claiming new address '%d'", new_address)
+        self._begin_address_claim(new_address)
+
+    def _begin_address_claim(self, new_address):
+        """Initiate the J1939-81 address-claim procedure at the given address.
+
+        Reuses the existing claim state machine: an Address Claimed message is
+        transmitted immediately at the new source address. Addresses in the
+        128..247 range enter WAIT_VETO (resolved to NORMAL by the recurring
+        :meth:`_process_claim_async` timer, contention by
+        :meth:`_process_addressclaim`); all other addresses claim immediately.
+
+        :param int new_address:
+            The source address to claim.
+        """
+        self._device_address_preferred = new_address
+        self._device_address_announced = new_address
+        self._send_address_claimed(new_address)
+        if new_address > 127 and new_address < 248:
+            self._device_address_state = ControllerApplication.State.WAIT_VETO
+        else:
+            # addresses from 0..127 and 248..253 claim immediately
+            self._device_address = new_address
+            self._device_address_state = ControllerApplication.State.NORMAL
+
     def _process_request(self, mid, dest_address, data, timestamp):
         """Processes a REQUEST message
         :param j1939.MessageId mid:
