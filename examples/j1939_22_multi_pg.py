@@ -1,8 +1,8 @@
 import logging
 import time
+
 import j1939
 from j1939.message_id import FrameFormat
-
 
 logging.getLogger('j1939').setLevel(logging.DEBUG)
 logging.getLogger('can').setLevel(logging.DEBUG)
@@ -22,7 +22,7 @@ def on_message(priority, pgn, sa, timestamp, data):
     :param bytearray data:
         Data of the PDU
     """
-    print("PGN {} length {}".format(pgn, len(data)), timestamp)
+    print(f"PGN {pgn} length {len(data)}", timestamp)
 
 
 def ca_timer_callback1(ca : j1939.ControllerApplication):

@@ -1,9 +1,10 @@
 from __future__ import annotations
+
+import logging
+import threading
 from collections.abc import Callable
 from enum import Enum
-import logging
-from typing import Optional
-import threading
+
 import j1939
 
 logger = logging.getLogger(__name__)
@@ -249,11 +250,11 @@ class MemoryAccess:
     def respond(
         self,
         proceed: bool,
-        data: Optional[list] = None,
+        data: list | None = None,
         error: int = 0xFFFFFF,
         edcp: int = 0xFF,
         max_timeout: int = 3,
-    ) -> Optional[list]:
+    ) -> list | None:
         """
         Responds with requested data and error code, if applicable, to a read request
 
