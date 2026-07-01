@@ -477,6 +477,12 @@ class ElectronicControlUnit:
                 dic['cb'](priority, pgn, sa, timestamp, data)
 
     def _is_message_acceptable(self, dest):
+        # Ownership / active-participation check only: does a subscriber own this
+        # exact destination address (simple peer-to-peer reception)? This gate
+        # decides whether the stack actively engages the directed transport
+        # protocol (RTS/CTS/EOM-ACK). Passive wildcard (``device_address=None``)
+        # and callable subscribers are handled separately by _notify_subscribers()
+        # so a monitor never causes the stack to answer on the bus.
         with self._subscribers_lock:
             return any(d['dev_adr'] == dest for d in self._subscribers)
 
