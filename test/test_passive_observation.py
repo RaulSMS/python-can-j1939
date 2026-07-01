@@ -65,6 +65,29 @@ def test_no_cts_for_rts_directed_at_third_node():
     assert received == [], "must not reassemble/deliver a transfer we do not own"
 
 
+def test_wildcard_observes_address_claim():
+    """A wildcard subscriber observes address-claim broadcasts (e.g. to read a
+    node's NAME), and the stack transmits nothing in response."""
+    ecu, sent = _make_ecu()
+    received = []
+    ecu.subscribe(
+        lambda priority, pgn, sa, timestamp, data: received.append(
+            (pgn, sa, list(data))
+        )
+    )
+    try:
+        name = [1, 2, 3, 4, 5, 6, 7, 8]
+        # Address Claimed: PGN 0xEE00, global destination, source 0xB0
+        # -> arbitration id 0x18EEFFB0.
+        ecu.notify(0x18EEFFB0, name, time.time())
+        time.sleep(0.1)
+    finally:
+        ecu.stop()
+
+    assert received == [(0xEE00, 0xB0, name)]
+    assert sent == [], "observing an address claim must not transmit on the bus"
+
+
 def test_owned_destination_still_participates():
     """Regression: when a CA owns the destination, the stack still answers the
     RTS/CTS handshake (active participation is preserved)."""
