@@ -848,6 +848,10 @@ class J1939_22:
         elif pgn_value == ParameterGroupNumber.PGN.ADDRESSCLAIM:
             for ca in self._cas:
                 ca._process_addressclaim(mid, data, timestamp)
+            # Address claims are broadcast and observable by any node on the bus;
+            # forward them to subscribers as well so passive monitors can see the
+            # NAME/source-address of other nodes (consistent with j1939-21).
+            self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
         elif pgn_value == ParameterGroupNumber.PGN.REQUEST:
             for ca in self._cas:
                 if ca.message_acceptable(dest_address):
