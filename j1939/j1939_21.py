@@ -421,7 +421,14 @@ class J1939_21:
                 # finished reassembly
                 if dest_address != ParameterGroupNumber.Address.GLOBAL:
                     self.__send_tp_eom_ack(dest_address, src_address, self._rcv_buffer[buffer_hash]['message_size'], self._rcv_buffer[buffer_hash]['num_packages'], self._rcv_buffer[buffer_hash]['pgn'])
-                self.__notify_subscribers(mid.priority, self._rcv_buffer[buffer_hash]['pgn'], src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
+                if self._rcv_buffer[buffer_hash]['pgn'] == ParameterGroupNumber.PGN.COMMANDED_ADDRESS:
+                    # route Commanded Address (J1939-81) to the registered CAs and
+                    # consume it (do not forward to generic subscribers, consistent
+                    # with ADDRESSCLAIM/REQUEST handling in notify())
+                    for ca in self._cas:
+                        ca._process_commanded_address(src_address, self._rcv_buffer[buffer_hash]['data'], timestamp)
+                else:
+                    self.__notify_subscribers(mid.priority, self._rcv_buffer[buffer_hash]['pgn'], src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
                 del self._rcv_buffer[buffer_hash]
                 self.__job_thread_wakeup()
                 return
@@ -516,29 +523,45 @@ class J1939_21:
         pgn_value = pgn.value & 0x1FF00
         dest_address = pgn.pdu_specific # may be Address.GLOBAL
 
-        # iterate all CAs to check if we have to handle this destination address
-        if dest_address != ParameterGroupNumber.Address.GLOBAL:
-            if not self.__ecu_is_message_acceptable(dest_address): # simple peer-to-peer reception without adding a controller-application
-                reject = True
+        # Does this node OWN the destination address, i.e. should it actively
+        # participate in the directed transport protocol (RTS/CTS/EOM-ACK)?
+        # Ownership is decided by an exact peer-to-peer subscriber address or a
+        # registered ControllerApplication. Passive wildcard/callable subscribers
+        # must be able to observe directed traffic without the stack answering on
+        # the bus, so they do NOT grant ownership here.
+        owns_dest = (dest_address == ParameterGroupNumber.Address.GLOBAL)
+        if not owns_dest:
+            if self.__ecu_is_message_acceptable(dest_address): # simple peer-to-peer reception without adding a controller-application
+                owns_dest = True
+            else:
                 for ca in self._cas:
                     if ca.message_acceptable(dest_address):
-                        reject = False
+                        owns_dest = True
                         break
-                if reject:
-                    return
 
         if pgn_value == ParameterGroupNumber.PGN.ADDRESSCLAIM:
             for ca in self._cas:
                 ca._process_addressclaim(mid, data, timestamp)
+            # Address claims are broadcast and observable by any node on the bus;
+            # forward them to subscribers as well so passive monitors can see the
+            # NAME/source-address of other nodes.
+            self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
         elif pgn_value == ParameterGroupNumber.PGN.REQUEST:
             for ca in self._cas:
                 if ca.message_acceptable(dest_address):
                     ca._process_request(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.TP_CM:
-            self._process_tp_cm(mid, dest_address, data, timestamp)
+            # only participate in the transport protocol for owned destinations
+            if owns_dest:
+                self._process_tp_cm(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.DATATRANSFER:
-            self._process_tp_dt(mid, dest_address, data, timestamp)
+            if owns_dest:
+                self._process_tp_dt(mid, dest_address, data, timestamp)
         else:
+            # simple single-frame peer-to-peer PDU1: passive delivery only.
+            # _notify_subscribers honors wildcard/callable/exact subscribers, so a
+            # monitor receives directed frames addressed to any node without the
+            # stack having to own the destination address.
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
             return
 

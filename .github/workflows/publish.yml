@@ -19,7 +19,7 @@ jobs:
       contents: write # Required to create a GitHub Release
 
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
         uses: actions/setup-python@v6.3.0
@@ -38,7 +38,7 @@ jobs:
           cd dist && echo "hashes=$(sha256sum * | base64 -w0)" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz

@@ -572,7 +572,14 @@ class J1939_22:
                     return
                 pgn = self._rcv_buffer[buffer_hash]['pgn']
                 if (self._rcv_buffer[buffer_hash]['message_size'] == message_size) and (self._rcv_buffer[buffer_hash]['num_segments'] == segment_num):
-                    self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
+                    if pgn == ParameterGroupNumber.PGN.COMMANDED_ADDRESS:
+                        # route Commanded Address (J1939-81) to the registered CAs
+                        # and consume it (do not forward to generic subscribers,
+                        # consistent with ADDRESSCLAIM/REQUEST handling in notify())
+                        for ca in self._cas:
+                            ca._process_commanded_address(src_address, self._rcv_buffer[buffer_hash]['data'], timestamp)
+                    else:
+                        self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
                     if dest_address != ParameterGroupNumber.Address.GLOBAL:
                         self.__send_tp_eom_ack(dest_address, src_address, session_num, message_size, segment_num, pgn)
                 else:
@@ -705,7 +712,15 @@ class J1939_22:
             payload_length = (data[3] & 0xFF)
             if (tos == 2) and (trailer_format == 0):
                 # SAE J1939 with no assurance data
-                self.__notify_subscribers(mid.priority, cpgn, src_address, dest_address, timestamp, data[4:(4+payload_length)].copy())
+                payload = data[4:(4+payload_length)].copy()
+                if cpgn == ParameterGroupNumber.PGN.COMMANDED_ADDRESS:
+                    # route Commanded Address (J1939-81) to the registered CAs and
+                    # consume it (do not forward to generic subscribers, consistent
+                    # with ADDRESSCLAIM/REQUEST handling in notify())
+                    for ca in self._cas:
+                        ca._process_commanded_address(src_address, payload, timestamp)
+                else:
+                    self.__notify_subscribers(mid.priority, cpgn, src_address, dest_address, timestamp, payload)
             else:
                 # TODO
                 print('other tos/tf formats currently not supported')
@@ -808,30 +823,44 @@ class J1939_22:
         pgn_value = pgn.value & 0x1FF00
         dest_address = pgn.pdu_specific # may be Address.GLOBAL
 
-        # iterate all CAs to check if we have to handle this destination address
-        if dest_address != ParameterGroupNumber.Address.GLOBAL:
-            if not self.__ecu_is_message_acceptable(dest_address): # simple peer-to-peer reception without adding a controller-application
-                reject = True
+        # Does this node OWN the destination address, i.e. should it actively
+        # participate in the directed transport protocol (RTS/CTS/EOM-ACK)?
+        # Ownership is decided by an exact peer-to-peer subscriber address or a
+        # registered ControllerApplication. Passive wildcard/callable subscribers
+        # must be able to observe directed traffic without the stack answering on
+        # the bus, so they do NOT grant ownership here.
+        owns_dest = (dest_address == ParameterGroupNumber.Address.GLOBAL)
+        if not owns_dest:
+            if self.__ecu_is_message_acceptable(dest_address): # simple peer-to-peer reception without adding a controller-application
+                owns_dest = True
+            else:
                 for ca in self._cas:
                     if ca.message_acceptable(dest_address):
-                        reject = False
+                        owns_dest = True
                         break
-                if reject:
-                    return
 
         if pgn_value == ParameterGroupNumber.PGN.FEFF_MULTI_PG:
+            # Multi-PG is a passive container (never answers on the bus); its
+            # contained PGNs are delivered to subscribers regardless of ownership.
             self._process_multi_pg(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.ADDRESSCLAIM:
             for ca in self._cas:
                 ca._process_addressclaim(mid, data, timestamp)
+            # Address claims are broadcast and observable by any node on the bus;
+            # forward them to subscribers as well so passive monitors can see the
+            # NAME/source-address of other nodes (consistent with j1939-21).
+            self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
         elif pgn_value == ParameterGroupNumber.PGN.REQUEST:
             for ca in self._cas:
                 if ca.message_acceptable(dest_address):
                     ca._process_request(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.FD_TP_CM:
-            self._process_tp_cm(mid, dest_address, data, timestamp)
+            # only participate in the transport protocol for owned destinations
+            if owns_dest:
+                self._process_tp_cm(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.FD_TP_DT:
-            self._process_tp_dt(mid, dest_address, data, timestamp)
+            if owns_dest:
+                self._process_tp_dt(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.TP_CM:
             logger.info('j1939-21 transport protocol cm not allowed in j1939-22 network')
         elif pgn_value == ParameterGroupNumber.PGN.DATATRANSFER:
