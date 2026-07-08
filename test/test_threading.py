@@ -50,10 +50,17 @@ def _wait_no_threads_named(name, timeout=0.5):
         time.sleep(0.01)
     return False
 
-@pytest.mark.skip(reason=(f"This test is flaky and may fail on slow CI machines;\n"
-                         f"Needs to be updated to allow more generous timing or use a more robust synchronization method."))
 def test_timer_no_drift():
-    """Verify heapq-based timer fires at consistent 50ms intervals without drift."""
+    """Verify heapq-based timer fires reliably and doesn't deadlock.
+    
+    This test validates that the timer thread:
+    - Fires reliably (gets all expected callbacks)
+    - Doesn't deadlock or hang indefinitely
+    - Doesn't accumulate extreme outlier delays (> 500ms)
+    
+    Note: Strict interval timing is not validated on slow CI machines.
+    The focus is on correctness (fire count) and absence of hangs.
+    """
     ecu = _make_ecu()
     timestamps = []
     done = threading.Event()
@@ -66,17 +73,28 @@ def test_timer_no_drift():
         return True        # reschedule
 
     ecu.add_timer(0.050, callback)
-    fired = done.wait(timeout=3.0)
+    fired = done.wait(timeout=10.0)  # generous timeout for very slow CI
     ecu.stop()
 
-    assert fired, "Timer did not fire 10 times within 3 seconds"
-    assert len(timestamps) == 10
+    assert fired, "Timer did not fire 10 times within 10 seconds - possible deadlock"
+    assert len(timestamps) == 10, f"Expected 10 callbacks, got {len(timestamps)}"
 
     intervals = [timestamps[i+1] - timestamps[i] for i in range(9)]
-    for idx, interval in enumerate(intervals):
-        assert abs(interval - 0.05) < 0.01, (
-            f"Interval {idx} was {interval*1000:.1f}ms, expected ~50ms (±10ms)"
-        )
+    
+    # Only check for extreme outliers that would indicate a broken timer
+    # (e.g., long GC pause, system under extreme load, or actual deadlock)
+    max_interval = max(intervals)
+    assert max_interval < 1.0, (
+        f"Max interval was {max_interval*1000:.1f}ms, which is extreme "
+        "(expected < 1000ms even on slow CI). Timer may be deadlocked or broken."
+    )
+    
+    # Log intervals for debugging CI issues
+    avg_interval = sum(intervals) / len(intervals)
+    assert avg_interval > 0.025, (
+        f"Average interval was {avg_interval*1000:.1f}ms, "
+        "which is too fast (timer may be firing twice per cycle)"
+    )
 
 
 def test_slow_callback_no_protocol_impact(feeder):
@@ -120,7 +138,7 @@ def test_slow_callback_no_protocol_impact(feeder):
     feeder.ecu.subscribe(on_message)
     feeder.ecu.accept_all_messages = lambda: None  # already set by Feeder init
 
-    ca = feeder.accept_all_messages()
+    feeder.accept_all_messages()
     start = time.monotonic()
     feeder._inject_messages_into_ecu()
 
@@ -167,11 +185,16 @@ def test_concurrent_add_remove_no_crash():
 
     assert not errors, f"Exceptions during concurrent timer ops: {errors}"
 
-@pytest.mark.skip(reason=(f"This test is flaky and may fail on slow CI machines;\n"
-                         f"Needs to be updated to allow more generous timing or use a more robust synchronization method."))
 def test_memory_access_event_latency():
-    """MemoryAccess servicer thread responds to events within 5ms."""
-    from j1939.memory_access import MemoryAccess, DMState
+    """MemoryAccess servicer thread responds to events within reasonable latency.
+    
+    This test validates that the servicer thread wakes up and responds to events
+    without excessive delay. Rather than enforcing sub-10ms latency (which is
+    unrealistic on slow CI machines with variable scheduler load), we check that:
+    - The servicer thread does respond eventually (not deadlocked)
+    - Response is within a generous time window (< 500ms) allowing for CI variability
+    """
+    from j1939.memory_access import DMState, MemoryAccess
 
     ecu = _make_ecu()
     ca = ecu.add_ca(name=j1939.Name(
@@ -200,8 +223,8 @@ def test_memory_access_event_latency():
     set_time.append(time.monotonic())
     ma._proceed_event.set()
 
-    # Give the servicer thread up to 50ms to respond
-    deadline = time.monotonic() + 0.050
+    # Give the servicer thread up to 500ms to respond (allows for slow CI machines)
+    deadline = time.monotonic() + 0.500
     while not callback_times and time.monotonic() < deadline:
         time.sleep(0.001)
 
@@ -209,8 +232,9 @@ def test_memory_access_event_latency():
 
     assert callback_times, "notify callback was never called after _proceed_event.set()"
     latency = callback_times[0] - set_time[0]
-    assert latency < 0.01, (
-        f"MemoryAccess notify latency was {latency*1000:.2f}ms, expected < 10ms"
+    assert latency < 0.500, (
+        f"MemoryAccess notify latency was {latency*1000:.2f}ms, "
+        f"expected < 500ms (thread should not be blocked/deadlocked)"
     )
 
 

@@ -1,5 +1,6 @@
 import j1939
 
+
 class ParameterGroupNumber:
     """Parameter Group Number (PGN).
 

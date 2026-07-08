@@ -1,8 +1,9 @@
-from .parameter_group_number import ParameterGroupNumber
-from .message_id import MessageId
 import logging
 import threading
 import time
+
+from .message_id import MessageId
+from .parameter_group_number import ParameterGroupNumber
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class J1939_21:
         self._minimum_tp_rts_cts_dt_interval = minimum_tp_rts_cts_dt_interval
 
         # set minimum time between two tp-bam messages
-        if minimum_tp_bam_dt_interval == None:
+        if minimum_tp_bam_dt_interval is None:
             self._minimum_tp_bam_dt_interval = self.Timeout.Tb
         else:
             self._minimum_tp_bam_dt_interval = minimum_tp_bam_dt_interval
@@ -227,7 +228,7 @@ class J1939_21:
                                     buf['state'] = self.SendBufferState.WAITING_CTS
                                     buf['deadline'] = time.monotonic() + self.Timeout.T3
                                     should_break = True
-                                elif self._minimum_tp_rts_cts_dt_interval != None:
+                                elif self._minimum_tp_rts_cts_dt_interval is not None:
                                     buf['deadline'] = time.monotonic() + self._minimum_tp_rts_cts_dt_interval
                                     should_break = True
 

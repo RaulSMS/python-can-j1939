@@ -1,8 +1,10 @@
+
 from __future__ import annotations
+
+import queue
 from collections.abc import Callable
 from enum import Enum
-from typing import Optional
-import queue
+
 import j1939
 
 
@@ -42,14 +44,14 @@ class Dm14Query:
 
         self._ca = ca
         self.state = QueryState.IDLE
-        self._seed_from_key: Optional[Callable[[int], int]] = None
+        self._seed_from_key: Callable[[int], int] | None = None
         self.data_queue: queue.Queue = queue.Queue()
         self.mem_data = None
         self.exception_queue: queue.Queue = queue.Queue()
         self.user_level = user_level
-        self._dest_address: Optional[int] = None
-        self.address: Optional[int] = None
-        self.command: Optional[Command] = None
+        self._dest_address: int | None = None
+        self.address: int | None = None
+        self.command: Command | None = None
 
     def unsubscribe_all(self) -> None:
         """

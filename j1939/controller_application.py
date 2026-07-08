@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import logging
-from typing import Optional
+
 import j1939
+
 from .message_id import FrameFormat
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ class ControllerApplication:
             self._device_address_announced = j1939.ParameterGroupNumber.Address.NULL
             self._device_address = j1939.ParameterGroupNumber.Address.NULL
             self._device_address_state = ControllerApplication.State.NONE
-        self._ecu: Optional[j1939.ElectronicControlUnit] = None
+        self._ecu: j1939.ElectronicControlUnit | None = None
         self._subscribers_request = []
         self._subscribers_acknowledge = []
         self._started = False
@@ -174,7 +176,7 @@ class ControllerApplication:
     def _process_claim_async(self, cookie):
         time_to_sleep = 0.500
         if self._device_address_state == ControllerApplication.State.NONE:
-            if self._device_address_preferred != None:
+            if self._device_address_preferred is not None:
                 self._device_address_announced = self._device_address_preferred
                 self._send_address_claimed(self._device_address_announced)
                 if self._device_address_announced > 127 and self._device_address_announced < 248:
@@ -231,7 +233,7 @@ class ControllerApplication:
                 # TODO: are there any state variables we have to care about?
                 self._device_address = j1939.ParameterGroupNumber.Address.NULL
                 # TODO: maybe we should call an overloadable function here
-                if self._name.arbitrary_address_capable == False:
+                if not self._name.arbitrary_address_capable:
                     # bad luck
                     logger.error("After releasing our address we are configured to stop operation (CANNOT CLAIM)")
                     self._device_address_state = ControllerApplication.State.CANNOT_CLAIM

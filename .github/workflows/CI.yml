@@ -24,13 +24,16 @@ jobs:
       - uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.10'
-          cache: 'pip'
+          cache: 'pip' # Safely caches dependencies
 
       - name: Install dependencies
-        run: pip install vermin -e .[lint]
+        run: pip install -e .[lint]
 
-      - name: Check minimum Python version (must not exceed 3.10)
-        run: vermin --target=3.10- --backport enum j1939/
+      - name: Check style and syntax (Ruff)
+        run: ruff check .
+
+      - name: Check minimum Python version compatibility (Vermin)
+        run: vermin --target=3.10- --no-parse-comments --no-tips j1939/
 
       - name: Run Pyright
         run: pyright
