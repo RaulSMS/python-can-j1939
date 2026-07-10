@@ -1,6 +1,7 @@
 
 import can
 
+import j1939
 from test.helpers.feeder import Feeder
 
 #def test_connect(self):
@@ -195,3 +196,116 @@ def test_subscribe(feeder):
     feeder.receive()
 
     assert call_count == 1
+
+
+def test_constructor_accepts_bus_instance():
+    """Passing a bus instance to the constructor stores it without calling connect()."""
+    bus = can.interface.Bus(interface="virtual", channel="test_ctor_bus")
+    try:
+        ecu = j1939.ElectronicControlUnit(bus=bus)
+        assert ecu._bus is bus
+        assert ecu._notifier is None          # connect() not yet called
+        assert ecu._bus_created is False      # bus was not created by this ECU
+    finally:
+        ecu.stop()
+        bus.shutdown()
+
+
+def test_constructor_bus_none_by_default():
+    """Without a bus= argument, _bus starts as None."""
+    ecu = j1939.ElectronicControlUnit(send_message=lambda *a, **kw: None)
+    try:
+        assert ecu._bus is None
+        assert ecu._bus_created is False
+    finally:
+        ecu.stop()
+
+
+def test_constructor_invalid_data_link_layer_raises():
+    """An unsupported data_link_layer string raises ValueError immediately."""
+    import pytest
+    with pytest.raises(ValueError, match="j1939-21.*j1939-22"):
+        j1939.ElectronicControlUnit(data_link_layer='j1939-99')
+
+
+def test_connect_with_preexisting_bus_sets_notifier():
+    """When a bus is passed to __init__, connect() sets up the notifier
+    without creating a new bus and without emitting a DeprecationWarning.
+    """
+    import warnings
+    bus = can.interface.Bus(interface="virtual", channel="test_connect_prebus")
+    try:
+        ecu = j1939.ElectronicControlUnit(bus=bus)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            returned_bus = ecu.connect()
+
+        # No DeprecationWarning: bus was already provided
+        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert deprecations == [], "connect() must not warn when bus was provided in constructor"
+
+        assert returned_bus is bus
+        assert ecu._notifier is not None
+        assert ecu._bus is bus
+    finally:
+        ecu.disconnect()
+        ecu.stop()
+        bus.shutdown()
+
+
+def test_connect_without_preexisting_bus_emits_deprecation_warning():
+    """When connect() creates the bus itself (legacy path), it emits a
+    DeprecationWarning advising the caller to pass bus= to the constructor.
+    """
+    import warnings
+    ecu = j1939.ElectronicControlUnit(send_message=lambda *a, **kw: None)
+    try:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ecu.connect(interface="virtual", channel="test_connect_legacy")
+
+        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert "deprecated" in str(deprecations[0].message).lower()
+        assert ecu._bus_created is True
+    finally:
+        ecu.disconnect()
+        ecu.stop()
+
+
+def test_disconnect_before_connect_raises_runtime_error():
+    """Calling disconnect() before connect() raises RuntimeError (previously
+    would crash with AttributeError/NoneType errors).
+    """
+    import pytest
+    ecu = j1939.ElectronicControlUnit(send_message=lambda *a, **kw: None)
+    try:
+        with pytest.raises(RuntimeError):
+            ecu.disconnect()
+    finally:
+        ecu.stop()
+
+
+def test_disconnect_does_not_shutdown_external_bus():
+    """When a bus was passed to __init__ (not created by connect()), disconnect()
+    must NOT call bus.shutdown() — the caller owns the bus lifecycle.
+    """
+    shutdown_called = []
+
+    class TrackingBus(can.interfaces.virtual.VirtualBus):
+        def shutdown(self):
+            shutdown_called.append(True)
+            super().shutdown()
+
+    bus = TrackingBus(channel="test_disconnect_external")
+    try:
+        ecu = j1939.ElectronicControlUnit(bus=bus)
+        ecu.connect()
+        ecu.disconnect()
+
+        assert shutdown_called == [], (
+            "disconnect() must not shutdown a bus that was provided externally"
+        )
+    finally:
+        ecu.stop()
+        bus.shutdown()
