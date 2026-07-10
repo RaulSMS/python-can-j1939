@@ -5,6 +5,7 @@ import logging
 import queue
 import threading
 import time
+import warnings
 
 import can
 from can import Listener
@@ -17,20 +18,42 @@ from .parameter_group_number import ParameterGroupNumber
 
 logger = logging.getLogger(__name__)
 
+
 class ElectronicControlUnit:
     """ElectronicControlUnit (ECU) holding one or more ControllerApplications (CAs)."""
 
-
-    def __init__(self, data_link_layer='j1939-21', max_cmdt_packets=1, minimum_tp_rts_cts_dt_interval=None, minimum_tp_bam_dt_interval=None, send_message=None):
+    def __init__(
+        self,
+        data_link_layer="j1939-21",
+        max_cmdt_packets=1,
+        minimum_tp_rts_cts_dt_interval=None,
+        minimum_tp_bam_dt_interval=None,
+        send_message=None,
+        bus: can.BusABC | None = None,
+    ):
         """
         :param data_link_layer:
             specify data-link-layer, 'j1939-21' or 'j1939-22'
+        :param max_cmdt_packets:
+            maximum number of segments that can be sent in one transport protocol session (1-255)
+        :param minimum_tp_rts_cts_dt_interval:
+            minimum time in seconds between RTS/CTS/DT messages (default: None, which means 0.05s for j1939-21 and 0.01s for j1939-22)
+        :param minimum_tp_bam_dt_interval:
+            minimum time in seconds between BAM/DT messages (default: None, which means 0.05s for j1939-21 and 0.01s for j1939-22)
+        :param send_message:
+            optional callback function to send a raw CAN message to the bus. If not provided, the default implementation will be used, which sends messages via the python-can bus.
+        :param bus:
+            optional python-can :class:`can.BusABC` instance. If not provided, the ECU will not be connected to a bus until :meth:`connect` is called.
         """
         if send_message:
             self.send_message = send_message
 
         #: A python-can :class:`can.BusABC` instance
-        self._bus = None
+        self._bus = bus
+        # TODO: remove this once the deprecated connect() path is removed.  This is only used to track if the bus was created by this ECU or passed in by the user.
+        self._bus_created = (
+            False  # True if the bus was created by this ECU (deprecated connect() path)
+        )
         # Locking object for send
         self._send_lock = threading.Lock()
 
@@ -38,12 +61,30 @@ class ElectronicControlUnit:
             raise ValueError("max number of segments that can be sent is 0xFF")
 
         # set data link layer
-        if data_link_layer == 'j1939-21':
-            self.j1939_dll = J1939_21(self.send_message, self._protocol_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
-        elif data_link_layer == 'j1939-22':
-            self.j1939_dll = J1939_22(self.send_message, self._protocol_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
+        if data_link_layer == "j1939-21":
+            self.j1939_dll = J1939_21(
+                self.send_message,
+                self._protocol_wakeup,
+                self._notify_subscribers,
+                max_cmdt_packets,
+                minimum_tp_rts_cts_dt_interval,
+                minimum_tp_bam_dt_interval,
+                self._is_message_acceptable,
+            )
+        elif data_link_layer == "j1939-22":
+            self.j1939_dll = J1939_22(
+                self.send_message,
+                self._protocol_wakeup,
+                self._notify_subscribers,
+                max_cmdt_packets,
+                minimum_tp_rts_cts_dt_interval,
+                minimum_tp_bam_dt_interval,
+                self._is_message_acceptable,
+            )
         else:
-            raise ValueError("either 'j1939-21' or 'j1939-22' must be provided for data link layer")
+            raise ValueError(
+                "either 'j1939-21' or 'j1939-22' must be provided for data link layer"
+            )
 
         #: Includes at least MessageListener.
         self._listeners = [MessageListener(self)]
@@ -68,19 +109,20 @@ class ElectronicControlUnit:
         logger.info("Starting ECU protocol thread")
         self._protocol_wakeup_queue = queue.Queue()
         self._protocol_thread = threading.Thread(
-            target=self._protocol_job_thread, name='j1939.ecu protocol_thread')
+            target=self._protocol_job_thread, name="j1939.ecu protocol_thread"
+        )
         self._protocol_thread.daemon = True
 
         # Timer thread: owns application cyclic callbacks only
         logger.info("Starting ECU timer thread")
         self._timer_wakeup_queue = queue.Queue()
         self._timer_thread = threading.Thread(
-            target=self._timer_job_thread, name='j1939.ecu timer_thread')
+            target=self._timer_job_thread, name="j1939.ecu timer_thread"
+        )
         self._timer_thread.daemon = True
 
         self._protocol_thread.start()
         self._timer_thread.start()
-
 
     def stop(self):
         """Stops the ECU background handling
@@ -132,13 +174,13 @@ class ElectronicControlUnit:
         :raises TypeError:
             If ``dependent`` does not expose a callable ``stop`` attribute.
         """
-        if not callable(getattr(dependent, 'stop', None)):
-            raise TypeError(
-                "dependent must expose a callable stop() method")
+        if not callable(getattr(dependent, "stop", None)):
+            raise TypeError("dependent must expose a callable stop() method")
         with self._dependents_lock:
             if self._stopping:
                 raise RuntimeError(
-                    "Cannot register a dependent while the ECU is stopping")
+                    "Cannot register a dependent while the ECU is stopping"
+                )
             for existing in self._dependents:
                 if existing is dependent:
                     return
@@ -151,8 +193,7 @@ class ElectronicControlUnit:
             The object previously passed to :meth:`register_dependent`.
         """
         with self._dependents_lock:
-            self._dependents = [
-                d for d in self._dependents if d is not dependent]
+            self._dependents = [d for d in self._dependents if d is not dependent]
 
     def add_timer(self, delta_time, callback, cookie=None):
         """Adds a callback to the list of timer events
@@ -164,8 +205,10 @@ class ElectronicControlUnit:
         """
         deadline = time.monotonic() + delta_time
         with self._timer_events_lock:
-            heapq.heappush(self._timer_events,
-                           (deadline, self._timer_seq, callback, cookie, delta_time))
+            heapq.heappush(
+                self._timer_events,
+                (deadline, self._timer_seq, callback, cookie, delta_time),
+            )
             self._timer_seq += 1
         self._timer_wakeup_queue.put(1)
 
@@ -198,7 +241,16 @@ class ElectronicControlUnit:
         :raises can.CanError:
             When connection fails.
         """
-        self._bus = can.interface.Bus(*args, **kwargs)
+        # TODO: since bus creation has been an existing feature, keeping backwards compatibility with the old way of creating a bus.
+        # But this should be refactored in the future to use a more explicit way of creating a bus.
+        if self._bus is None:
+            warnings.warn(
+                "Creating a bus in connect() is deprecated; pass a bus instance to the constructor instead",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
+            self._bus = can.interface.Bus(*args, **kwargs)
+            self._bus_created = True
         logger.info("Connected to '%s'", self._bus.channel_info)
         self._notifier = can.Notifier(self._bus, self._listeners, 1)
         return self._bus
@@ -209,11 +261,14 @@ class ElectronicControlUnit:
         Must be overridden in a subclass if a custom interface is used.
         """
         if self._notifier is None:
-            raise RuntimeError("notifier is not set; call connect() before disconnect()")
+            raise RuntimeError(
+                "notifier is not set; call connect() before disconnect()"
+            )
         if self._bus is None:
             raise RuntimeError("bus is not set; call connect() before disconnect()")
         self._notifier.stop()
-        self._bus.shutdown()
+        if self._bus_created:
+            self._bus.shutdown()
         self._bus = None
 
     def subscribe(self, callback, device_address=None):
@@ -228,7 +283,7 @@ class ElectronicControlUnit:
             Note: TP.CMDT will only be received if the destination address is bound to a controller application.
         """
         with self._subscribers_lock:
-            self._subscribers.append({'cb': callback, 'dev_adr': device_address})
+            self._subscribers.append({"cb": callback, "dev_adr": device_address})
 
     def unsubscribe(self, callback):
         """Stop listening for message.
@@ -237,8 +292,7 @@ class ElectronicControlUnit:
             Function to call when message is received.
         """
         with self._subscribers_lock:
-            self._subscribers = [d for d in self._subscribers if d['cb'] != callback]
-
+            self._subscribers = [d for d in self._subscribers if d["cb"] != callback]
 
     def add_ca(self, **kwargs):
         """Add a ControllerApplication to the ECU.
@@ -257,13 +311,15 @@ class ElectronicControlUnit:
 
         :rtype: r3964.ControllerApplication
         """
-        if 'controller_application' in kwargs:
-            ca = kwargs['controller_application']
+        if "controller_application" in kwargs:
+            ca = kwargs["controller_application"]
         else:
-            if 'name' not in kwargs:
-                raise ValueError("either 'controller_application' or 'name' must be provided")
-            name = kwargs.get('name')
-            da = kwargs.get('device_address', None)
+            if "name" not in kwargs:
+                raise ValueError(
+                    "either 'controller_application' or 'name' must be provided"
+                )
+            name = kwargs.get("name")
+            da = kwargs.get("device_address", None)
             ca = ControllerApplication(name, da)
 
         self.j1939_dll.add_ca(ca)
@@ -300,20 +356,28 @@ class ElectronicControlUnit:
             self._notifier.add_listener(listener)
 
     def remove_bus(self):
-        """Remove the bus from the ECU.
-        """
+        """Remove the bus from the ECU."""
         self._bus = None
 
     def remove_notifier(self):
-        """Remove the notifier from the ECU.
-        """
+        """Remove the notifier from the ECU."""
         if self._notifier is None:
             return
         for listener in self._listeners:
             self._notifier.remove_listener(listener)
         self._notifier = None
 
-    def send_pgn(self, data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit=0, frame_format=FrameFormat.FEFF):
+    def send_pgn(
+        self,
+        data_page,
+        pdu_format,
+        pdu_specific,
+        priority,
+        src_address,
+        data,
+        time_limit=0,
+        frame_format=FrameFormat.FEFF,
+    ):
         """send a pgn
         :param int data_page: data page
         :param int pdu_format: pdu format
@@ -325,7 +389,16 @@ class ElectronicControlUnit:
         after this time, the multi-pg will be sent. several pgs can thus be combined in one multi-pg.
         0 or no time-limit means immediate sending.
         """
-        return self.j1939_dll.send_pgn(data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit, frame_format)
+        return self.j1939_dll.send_pgn(
+            data_page,
+            pdu_format,
+            pdu_specific,
+            priority,
+            src_address,
+            data,
+            time_limit,
+            frame_format,
+        )
 
     def send_message(self, can_id, extended_id, data, fd_format=False):
         """Send a raw CAN message to the bus.
@@ -347,12 +420,13 @@ class ElectronicControlUnit:
 
         if not self._bus:
             raise RuntimeError("Not connected to CAN bus")
-        msg = can.Message(is_extended_id=extended_id,
-                          arbitration_id=can_id,
-                          data=data,
-                          is_fd=fd_format,
-                          bitrate_switch=fd_format
-                          )
+        msg = can.Message(
+            is_extended_id=extended_id,
+            arbitration_id=can_id,
+            data=data,
+            is_fd=fd_format,
+            bitrate_switch=fd_format,
+        )
         with self._send_lock:
             self._bus.send(msg)
         # TODO: check error receivement
@@ -378,9 +452,9 @@ class ElectronicControlUnit:
     def add_bus_filters(self, filters: can.typechecking.CanFilters | None):
         """Add bus filters to the underlying CAN bus.
 
-         :param filters:
-            An iterable of dictionaries each containing a "can_id",
-            a "can_mask", and an optional "extended" key
+        :param filters:
+           An iterable of dictionaries each containing a "can_id",
+           a "can_mask", and an optional "extended" key
         """
         if self._bus is None:
             raise RuntimeError("Not connected to CAN bus")
@@ -419,10 +493,10 @@ class ElectronicControlUnit:
                     deadline, seq, cb, cookie, delta = heapq.heappop(self._timer_events)
                     logger.debug("Deadline for timer event reached")
                     try:
-                        reschedule = (cb(cookie) is True)
+                        reschedule = cb(cookie) is True
                     except Exception:
-                        #TODO: is there a better way to handle exceptions in user callbacks?  
-                        # We don't want one bad callback to break the timer thread, 
+                        # TODO: is there a better way to handle exceptions in user callbacks?
+                        # We don't want one bad callback to break the timer thread,
                         # but we also don't want to just swallow it silently.
                         logger.exception("Timer callback failed: %r", cb)
                         reschedule = False
@@ -431,8 +505,10 @@ class ElectronicControlUnit:
                         new_deadline = deadline + delta
                         while new_deadline < now:
                             new_deadline += delta
-                        heapq.heappush(self._timer_events,
-                                       (new_deadline, self._timer_seq, cb, cookie, delta))
+                        heapq.heappush(
+                            self._timer_events,
+                            (new_deadline, self._timer_seq, cb, cookie, delta),
+                        )
                         self._timer_seq += 1
                     # returning False (or None) means remove — already popped, nothing to do
 
@@ -475,8 +551,13 @@ class ElectronicControlUnit:
         with self._subscribers_lock:
             snapshot = list(self._subscribers)
         for dic in snapshot:
-            if (dic['dev_adr'] is None) or (dest == ParameterGroupNumber.Address.GLOBAL) or (callable(dic['dev_adr']) and dic['dev_adr'](dest)) or (dest == dic['dev_adr']):
-                dic['cb'](priority, pgn, sa, timestamp, data)
+            if (
+                (dic["dev_adr"] is None)
+                or (dest == ParameterGroupNumber.Address.GLOBAL)
+                or (callable(dic["dev_adr"]) and dic["dev_adr"](dest))
+                or (dest == dic["dev_adr"])
+            ):
+                dic["cb"](priority, pgn, sa, timestamp, data)
 
     def _is_message_acceptable(self, dest):
         # Ownership / active-participation check only: does a subscriber own this
@@ -486,7 +567,8 @@ class ElectronicControlUnit:
         # and callable subscribers are handled separately by _notify_subscribers()
         # so a monitor never causes the stack to answer on the bus.
         with self._subscribers_lock:
-            return any(d['dev_adr'] == dest for d in self._subscribers)
+            return any(d["dev_adr"] == dest for d in self._subscribers)
+
 
 class MessageListener(Listener):
     """Listens for messages on CAN bus and feeds them to an ECU instance.
@@ -495,12 +577,17 @@ class MessageListener(Listener):
         The ECU to notify on new messages.
     """
 
-    def __init__(self, ecu : ElectronicControlUnit):
+    def __init__(self, ecu: ElectronicControlUnit):
         self.ecu = ecu
         self.stopped = False
 
-    def on_message_received(self, msg : can.Message):
-        if self.stopped or msg.is_error_frame or msg.is_remote_frame or (not msg.is_extended_id):
+    def on_message_received(self, msg: can.Message):
+        if (
+            self.stopped
+            or msg.is_error_frame
+            or msg.is_remote_frame
+            or (not msg.is_extended_id)
+        ):
             return
 
         try:
