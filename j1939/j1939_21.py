@@ -45,6 +45,8 @@ class J1939_21:
         self._rcv_buffer = {}
         # Send buffers
         self._snd_buffer = {}
+        # send que
+        self._snd_que = {}
 
         # List of ControllerApplication
         self._cas = []
