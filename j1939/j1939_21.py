@@ -126,6 +126,15 @@ class J1939_21:
         else:
             # send RTS/CTS
             pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
+            self.__send_tp_rts(
+                    src_address,
+                    pdu_specific,
+                    priority,
+                    pgn.value,
+                    message_size,
+                    num_packets,
+                    min(self._max_cmdt_packets, num_packets),
+                )
             # init new buffer for this connection
             with self._buffer_lock:
                 self._snd_buffer[buffer_hash] = {
@@ -141,15 +150,6 @@ class J1939_21:
                     "next_packet_to_send": 0,
                     "next_wait_on_cts": 0,
                 }
-                self.__send_tp_rts(
-                    src_address,
-                    pdu_specific,
-                    priority,
-                    pgn.value,
-                    message_size,
-                    num_packets,
-                    min(self._max_cmdt_packets, num_packets),
-                )
 
     def send_pgn(self, data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit, frame_format):
         pgn = ParameterGroupNumber(data_page, pdu_format, pdu_specific)
