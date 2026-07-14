@@ -95,6 +95,62 @@ class J1939_21:
         """
         return ((src_address & 0xFF) << 8) | (dest_address & 0xFF)
 
+    def _put_multi_msg(self, data, dest_address, src_address,priority, pgn, buffer_hash,pdu_specific):
+        message_size = len(data)
+        num_packets = (
+            int(message_size / 7)
+            if (message_size % 7 == 0)
+            else int(message_size / 7) + 1
+        )
+
+        # if the PF is between 240 and 255, the message can only be broadcast
+        if dest_address == ParameterGroupNumber.Address.GLOBAL:
+            # send BAM
+            self.__send_tp_bam(
+                src_address, priority, pgn.value, message_size, num_packets
+            )
+            # init new buffer for this connection
+            with self._buffer_lock:
+                self._snd_buffer[buffer_hash] = {
+                    "pgn": pgn.value,
+                    "priority": priority,
+                    "message_size": message_size,
+                    "num_packages": num_packets,
+                    "data": data,
+                    "state": self.SendBufferState.SENDING_BM,
+                    "deadline": time.time() + self._minimum_tp_bam_dt_interval,
+                    "src_address": src_address,
+                    "dest_address": ParameterGroupNumber.Address.GLOBAL,
+                    "next_packet_to_send": 0,
+                }
+        else:
+            # send RTS/CTS
+            pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
+            # init new buffer for this connection
+            with self._buffer_lock:
+                self._snd_buffer[buffer_hash] = {
+                    "pgn": pgn.value,
+                    "priority": priority,
+                    "message_size": message_size,
+                    "num_packages": num_packets,
+                    "data": data,
+                    "state": self.SendBufferState.WAITING_CTS,
+                    "deadline": time.time() + self.Timeout.T3,
+                    "src_address": src_address,
+                    "dest_address": pdu_specific,
+                    "next_packet_to_send": 0,
+                    "next_wait_on_cts": 0,
+                }
+                self.__send_tp_rts(
+                    src_address,
+                    pdu_specific,
+                    priority,
+                    pgn.value,
+                    message_size,
+                    num_packets,
+                    min(self._max_cmdt_packets, num_packets),
+                )
+
     def send_pgn(self, data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit, frame_format):
         pgn = ParameterGroupNumber(data_page, pdu_format, pdu_specific)
         if len(data) <= 8:
@@ -112,59 +168,19 @@ class J1939_21:
             # init sequence
             # known limitation: only one BAM can be sent in parallel to a destination node
             buffer_hash = self._buffer_hash(src_address, dest_address)
-            message_size = len(data)
-            num_packets = int(message_size / 7) if (message_size % 7 == 0) else int(message_size / 7) + 1
-
-            # if the PF is between 240 and 255, the message can only be broadcast
-            if dest_address == ParameterGroupNumber.Address.GLOBAL:
-                # send BAM before acquiring the lock — CAN I/O must not be
-                # held under _buffer_lock to avoid priority inversion with the
-                # protocol thread.
-                with self._buffer_lock:
-                    if buffer_hash in self._snd_buffer:
-                        # There is already a sequence active for this pair
-                        return False
-                self.__send_tp_bam(src_address, priority, pgn.value, message_size, num_packets)
-
-                # init new buffer for this connection
-                with self._buffer_lock:
-                    self._snd_buffer[buffer_hash] = {
-                            "pgn": pgn.value,
-                            "priority": priority,
-                            "message_size": message_size,
-                            "num_packages": num_packets,
-                            "data": data,
-                            "state": self.SendBufferState.SENDING_BM,
-                            "deadline": time.monotonic() + self._minimum_tp_bam_dt_interval,
-                            'src_address' : src_address,
-                            'dest_address' : ParameterGroupNumber.Address.GLOBAL,
-                            'next_packet_to_send' : 0,
-                        }
-            else:
-                # send RTS/CTS
-                pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
-                with self._buffer_lock:
-                    if buffer_hash in self._snd_buffer:
-                        # There is already a sequence active for this pair
-                        return False
-                self.__send_tp_rts(src_address, pdu_specific, priority, pgn.value, message_size, num_packets, min(self._max_cmdt_packets, num_packets))
-
-                # init new buffer for this connection
-                with self._buffer_lock:
-                    self._snd_buffer[buffer_hash] = {
-                            "pgn": pgn.value,
-                            "priority": priority,
-                            "message_size": message_size,
-                            "num_packages": num_packets,
-                            "data": data,
-                            "state": self.SendBufferState.WAITING_CTS,
-                            "deadline": time.monotonic() + self.Timeout.T3,
-                            'src_address' : src_address,
-                            'dest_address' : pdu_specific,
-                            'next_packet_to_send' : 0,
-                            'next_wait_on_cts': 0,
-                        }
-
+            with self._buffer_lock:
+                if buffer_hash in self._snd_buffer:
+                    # There is already a sequence active for this pair
+                    # put in que
+                    self._snd_que[pgn.value] = {'buffer_hash': buffer_hash,
+                                          'pdu_specific': pdu_specific,
+                                          'priority': priority,
+                                          'src_address':src_address,
+                                          'pgn': pgn,
+                                          'data': data,
+                                          'dest_address': dest_address}
+                    return False
+            self._put_multi_msg(data, dest_address, src_address, priority, pgn, buffer_hash, pdu_specific)
             self.__job_thread_wakeup()
 
         return True
@@ -190,6 +206,13 @@ class J1939_21:
                             self.__send_tp_abort(buf['dest_address'], buf['src_address'], self.ConnectionAbortReason.TIMEOUT, buf['pgn'])
                         # TODO: should we notify our CAs about the cancelled transfer?
                         del self._rcv_buffer[bufid]
+
+            # get from que if buffer is empty
+            if not bool(self._snd_buffer):
+                for key, value in self._snd_que.items():
+                    self._put_multi_msg(**value)
+                    self._snd_que.pop(key)
+                    break
 
             # check send buffers
             for bufid in list(self._snd_buffer):
