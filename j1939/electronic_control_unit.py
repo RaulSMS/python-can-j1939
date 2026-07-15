@@ -382,6 +382,15 @@ class ElectronicControlUnit:
             self._transmit(msg)
         else:
             self._tx_queue.put(msg)
+            # Wake the service thread so the frame is put on the bus promptly
+            # instead of waiting for its next tick.  A controller can expect a
+            # response within tens of milliseconds (e.g. the request/response
+            # steps of a source-address change), so a queued reply must not sit
+            # for a full flush interval.  Skip the self-wake when the service
+            # thread itself is the producer (its own cyclic callbacks) since it
+            # will drain the queue in the same pass.
+            if threading.current_thread() is not self._timer_thread:
+                self._timer_wakeup_queue.put(1)
         # TODO: check error receivement
 
     def _transmit(self, msg):
