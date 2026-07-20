@@ -251,6 +251,12 @@ class ElectronicControlUnit:
             )
             self._bus = can.interface.Bus(*args, **kwargs)
             self._bus_created = True
+        elif args or kwargs:
+            raise ValueError(
+                "connect() was called with bus configuration arguments but a bus "
+                "instance was already provided to the constructor. Pass arguments "
+                "to the constructor instead, or call connect() with no arguments."
+            )
         logger.info("Connected to '%s'", self._bus.channel_info)
         self._notifier = can.Notifier(self._bus, self._listeners, 1)
         return self._bus
@@ -267,8 +273,10 @@ class ElectronicControlUnit:
         if self._bus is None:
             raise RuntimeError("bus is not set; call connect() before disconnect()")
         self._notifier.stop()
+        self._notifier = None
         if self._bus_created:
             self._bus.shutdown()
+            self._bus_created = False
         self._bus = None
 
     def subscribe(self, callback, device_address=None):

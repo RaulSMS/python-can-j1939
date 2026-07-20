@@ -1,12 +1,12 @@
-
 import can
 
 import j1939
 from test.helpers.feeder import Feeder
 
-#def test_connect(self):
+# def test_connect(self):
 #    self.feeder.ecu.connect(bustype="virtual", channel=1)
 #    self.feeder.ecu.disconnect()
+
 
 def test_broadcast_receive_short(feeder):
     """Test the receivement of a normal broadcast message
@@ -24,6 +24,7 @@ def test_broadcast_receive_short(feeder):
 
     feeder.receive()
 
+
 def test_broadcast_receive_long(feeder):
     """Test the receivement of a long broadcast message
 
@@ -33,13 +34,24 @@ def test_broadcast_receive_long(feeder):
     feeder.accept_all_messages()
 
     feeder.can_messages = [
-        (Feeder.MsgType.CANRX, 0x00ECFF01, [32, 20, 0, 3, 255, 0xB0, 0xFE, 0], 0.0),    # TP.CM BAM (to global Address)
-        (Feeder.MsgType.CANRX, 0x00EBFF01, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 1
-        (Feeder.MsgType.CANRX, 0x00EBFF01, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 2
-        (Feeder.MsgType.CANRX, 0x00EBFF01, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),            # TP.DT 3
+        (
+            Feeder.MsgType.CANRX,
+            0x00ECFF01,
+            [32, 20, 0, 3, 255, 0xB0, 0xFE, 0],
+            0.0,
+        ),  # TP.CM BAM (to global Address)
+        (Feeder.MsgType.CANRX, 0x00EBFF01, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 1
+        (Feeder.MsgType.CANRX, 0x00EBFF01, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 2
+        (Feeder.MsgType.CANRX, 0x00EBFF01, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),  # TP.DT 3
     ]
 
-    feeder.pdus = [(Feeder.MsgType.PDU, 65200, [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6])]
+    feeder.pdus = [
+        (
+            Feeder.MsgType.PDU,
+            65200,
+            [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6],
+        )
+    ]
 
     feeder.receive()
 
@@ -53,12 +65,13 @@ def test_peer_to_peer_receive_short(feeder):
     feeder.accept_all_messages()
 
     feeder.can_messages = [
-        (Feeder.MsgType.CANRX, 0x00DC0201, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),   # TP.CM RTS
+        (Feeder.MsgType.CANRX, 0x00DC0201, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),  # TP.CM RTS
     ]
 
     feeder.pdus = [(Feeder.MsgType.PDU, 56320, [1, 2, 3, 4, 5, 6, 7, 8], 0)]
 
     feeder.receive()
+
 
 def test_peer_to_peer_receive_long(feeder):
     """Test the receivement of a long peer-to-peer message
@@ -69,19 +82,51 @@ def test_peer_to_peer_receive_long(feeder):
     feeder.accept_all_messages()
     # TODO: we have to select another PGN here! This one is for broadcasting only!
     feeder.can_messages = [
-        (Feeder.MsgType.CANRX, 0x00EC0201, [16, 20, 0, 3, 1, 176, 254, 0], 0.0),        # TP.CM RTS
-        (Feeder.MsgType.CANTX, 0x1CEC0102, [17, 1, 1, 255, 255, 176, 254, 0], 0.0),     # TP.CM CTS 1
-        (Feeder.MsgType.CANRX, 0x00EB0201, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 1
-        (Feeder.MsgType.CANTX, 0x1CEC0102, [17, 1, 2, 255, 255, 176, 254, 0], 0.0),     # TP.CM CTS 2
-        (Feeder.MsgType.CANRX, 0x00EB0201, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 2
-        (Feeder.MsgType.CANTX, 0x1CEC0102, [17, 1, 3, 255, 255, 176, 254, 0], 0.0),     # TP.CM CTS 3
-        (Feeder.MsgType.CANRX, 0x00EB0201, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),            # TP.DT 3
-        (Feeder.MsgType.CANTX, 0x1CEC0102, [19, 20, 0, 3, 255, 176, 254, 0], 0.0),      # TP.CM EOMACK
+        (
+            Feeder.MsgType.CANRX,
+            0x00EC0201,
+            [16, 20, 0, 3, 1, 176, 254, 0],
+            0.0,
+        ),  # TP.CM RTS
+        (
+            Feeder.MsgType.CANTX,
+            0x1CEC0102,
+            [17, 1, 1, 255, 255, 176, 254, 0],
+            0.0,
+        ),  # TP.CM CTS 1
+        (Feeder.MsgType.CANRX, 0x00EB0201, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 1
+        (
+            Feeder.MsgType.CANTX,
+            0x1CEC0102,
+            [17, 1, 2, 255, 255, 176, 254, 0],
+            0.0,
+        ),  # TP.CM CTS 2
+        (Feeder.MsgType.CANRX, 0x00EB0201, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 2
+        (
+            Feeder.MsgType.CANTX,
+            0x1CEC0102,
+            [17, 1, 3, 255, 255, 176, 254, 0],
+            0.0,
+        ),  # TP.CM CTS 3
+        (Feeder.MsgType.CANRX, 0x00EB0201, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),  # TP.DT 3
+        (
+            Feeder.MsgType.CANTX,
+            0x1CEC0102,
+            [19, 20, 0, 3, 255, 176, 254, 0],
+            0.0,
+        ),  # TP.CM EOMACK
     ]
 
-    feeder.pdus = [(Feeder.MsgType.PDU, 65200, [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6])]
+    feeder.pdus = [
+        (
+            Feeder.MsgType.PDU,
+            65200,
+            [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6],
+        )
+    ]
 
     feeder.receive()
+
 
 def test_peer_to_peer_send_short(feeder):
     """Test sending of a short peer-to-peer message
@@ -90,7 +135,7 @@ def test_peer_to_peer_send_short(feeder):
     Its length is 8 Bytes. The contained values are bogous of cause.
     """
     feeder.can_messages = [
-        (Feeder.MsgType.CANTX, 0x18F09B90, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),      # PGN 61440
+        (Feeder.MsgType.CANTX, 0x18F09B90, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),  # PGN 61440
     ]
 
     pdu = (Feeder.MsgType.PDU, 61440, [1, 2, 3, 4, 5, 6, 7, 8])
@@ -107,21 +152,51 @@ def test_peer_to_peer_send_long(feeder):
     feeder.accept_all_messages()
 
     feeder.can_messages = [
-        (Feeder.MsgType.CANTX, 0x18EC9B90, [16, 20, 0, 3, 1, 0, 223, 0], 0.0),          # TP.CM RTS 1
-        (Feeder.MsgType.CANRX, 0x1CEC909B, [17, 1, 1, 255, 255, 0, 223, 0], 0.0),       # TP.CM CTS 1
-        (Feeder.MsgType.CANTX, 0x1CEB9B90, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 1
-        (Feeder.MsgType.CANRX, 0x1CEC909B, [17, 1, 2, 255, 255, 0, 223, 0], 0.0),       # TP.CM CTS 2
-        (Feeder.MsgType.CANTX, 0x1CEB9B90, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 2
-        (Feeder.MsgType.CANRX, 0x1CEC909B, [17, 1, 3, 255, 255, 0, 223, 0], 0.0),       # TP.CM CTS 3
-        (Feeder.MsgType.CANTX, 0x1CEB9B90, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),            # TP.DT 3
-        (Feeder.MsgType.CANRX, 0x1CEC909B, [19, 20, 0, 3, 255, 0, 223, 0], 0.0),        # TP.CM EOMACK
+        (
+            Feeder.MsgType.CANTX,
+            0x18EC9B90,
+            [16, 20, 0, 3, 1, 0, 223, 0],
+            0.0,
+        ),  # TP.CM RTS 1
+        (
+            Feeder.MsgType.CANRX,
+            0x1CEC909B,
+            [17, 1, 1, 255, 255, 0, 223, 0],
+            0.0,
+        ),  # TP.CM CTS 1
+        (Feeder.MsgType.CANTX, 0x1CEB9B90, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 1
+        (
+            Feeder.MsgType.CANRX,
+            0x1CEC909B,
+            [17, 1, 2, 255, 255, 0, 223, 0],
+            0.0,
+        ),  # TP.CM CTS 2
+        (Feeder.MsgType.CANTX, 0x1CEB9B90, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 2
+        (
+            Feeder.MsgType.CANRX,
+            0x1CEC909B,
+            [17, 1, 3, 255, 255, 0, 223, 0],
+            0.0,
+        ),  # TP.CM CTS 3
+        (Feeder.MsgType.CANTX, 0x1CEB9B90, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),  # TP.DT 3
+        (
+            Feeder.MsgType.CANRX,
+            0x1CEC909B,
+            [19, 20, 0, 3, 255, 0, 223, 0],
+            0.0,
+        ),  # TP.CM EOMACK
     ]
 
     feeder.pdus = [(Feeder.MsgType.PDU, 57088, None)]
 
-    pdu = (Feeder.MsgType.PDU, 57088, [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6])
+    pdu = (
+        Feeder.MsgType.PDU,
+        57088,
+        [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6],
+    )
 
     feeder.send(pdu, 144, 155)
+
 
 def test_broadcast_send_long(feeder):
     """Test sending of a long broadcast message (with BAM)
@@ -130,15 +205,25 @@ def test_broadcast_send_long(feeder):
     Its length is 20 Bytes. The contained values are bogous of cause.
     """
     feeder.can_messages = [
-        (Feeder.MsgType.CANTX, 0x18ECFF90, [32, 20, 0, 3, 255, 176, 254, 0], 0.0),      # TP.BAM
-        (Feeder.MsgType.CANTX, 0x1CEBFF90, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 1
-        (Feeder.MsgType.CANTX, 0x1CEBFF90, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),              # TP.DT 2
-        (Feeder.MsgType.CANTX, 0x1CEBFF90, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),            # TP.DT 3
+        (
+            Feeder.MsgType.CANTX,
+            0x18ECFF90,
+            [32, 20, 0, 3, 255, 176, 254, 0],
+            0.0,
+        ),  # TP.BAM
+        (Feeder.MsgType.CANTX, 0x1CEBFF90, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 1
+        (Feeder.MsgType.CANTX, 0x1CEBFF90, [2, 1, 2, 3, 4, 5, 6, 7], 0.0),  # TP.DT 2
+        (Feeder.MsgType.CANTX, 0x1CEBFF90, [3, 1, 2, 3, 4, 5, 6, 255], 0.0),  # TP.DT 3
     ]
 
-    pdu = (Feeder.MsgType.PDU, 65200, [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6])
+    pdu = (
+        Feeder.MsgType.PDU,
+        65200,
+        [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6],
+    )
 
     feeder.send(pdu, 144, pdu[1])
+
 
 def test_add_bus(feeder):
     """
@@ -149,6 +234,7 @@ def test_add_bus(feeder):
     assert feeder.ecu._bus == bus
     feeder.ecu.remove_bus()
     assert feeder.ecu._bus is None
+
 
 def test_add_notfier(feeder):
     """
@@ -162,6 +248,7 @@ def test_add_notfier(feeder):
     feeder.ecu.remove_notifier()
     assert feeder.ecu._notifier is None
 
+
 def test_add_bus_filters(feeder):
     """
     Test adding bus filters to the ECU
@@ -169,11 +256,12 @@ def test_add_bus_filters(feeder):
     bus = can.interface.Bus(interface="virtual", channel=1)
     feeder.ecu.add_bus(bus)
     filters = [
-        {'can_id': 0x123, 'can_mask': 0x7FF, 'extended': True},
-        {'can_id': 0x456, 'can_mask': 0x7FF}
+        {"can_id": 0x123, "can_mask": 0x7FF, "extended": True},
+        {"can_id": 0x456, "can_mask": 0x7FF},
     ]
     feeder.ecu.add_bus_filters(filters)
     assert feeder.ecu._bus.filters == filters
+
 
 def test_subscribe(feeder):
     """
@@ -186,7 +274,7 @@ def test_subscribe(feeder):
         call_count += 1
 
     feeder.ecu.subscribe(callback)
-    
+
     feeder.can_messages = [
         (Feeder.MsgType.CANRX, 0x00FEB201, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),
     ]
@@ -201,13 +289,15 @@ def test_subscribe(feeder):
 def test_constructor_accepts_bus_instance():
     """Passing a bus instance to the constructor stores it without calling connect()."""
     bus = can.interface.Bus(interface="virtual", channel="test_ctor_bus")
+    ecu = None
     try:
         ecu = j1939.ElectronicControlUnit(bus=bus)
         assert ecu._bus is bus
-        assert ecu._notifier is None          # connect() not yet called
-        assert ecu._bus_created is False      # bus was not created by this ECU
+        assert ecu._notifier is None  # connect() not yet called
+        assert ecu._bus_created is False  # bus was not created by this ECU
     finally:
-        ecu.stop()
+        if ecu is not None:
+            ecu.stop()
         bus.shutdown()
 
 
@@ -224,8 +314,9 @@ def test_constructor_bus_none_by_default():
 def test_constructor_invalid_data_link_layer_raises():
     """An unsupported data_link_layer string raises ValueError immediately."""
     import pytest
+
     with pytest.raises(ValueError, match="j1939-21.*j1939-22"):
-        j1939.ElectronicControlUnit(data_link_layer='j1939-99')
+        j1939.ElectronicControlUnit(data_link_layer="j1939-99")
 
 
 def test_connect_with_preexisting_bus_sets_notifier():
@@ -233,7 +324,9 @@ def test_connect_with_preexisting_bus_sets_notifier():
     without creating a new bus and without emitting a DeprecationWarning.
     """
     import warnings
+
     bus = can.interface.Bus(interface="virtual", channel="test_connect_prebus")
+    ecu = None
     try:
         ecu = j1939.ElectronicControlUnit(bus=bus)
         with warnings.catch_warnings(record=True) as w:
@@ -242,14 +335,17 @@ def test_connect_with_preexisting_bus_sets_notifier():
 
         # No DeprecationWarning: bus was already provided
         deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert deprecations == [], "connect() must not warn when bus was provided in constructor"
+        assert deprecations == [], (
+            "connect() must not warn when bus was provided in constructor"
+        )
 
         assert returned_bus is bus
         assert ecu._notifier is not None
         assert ecu._bus is bus
     finally:
-        ecu.disconnect()
-        ecu.stop()
+        if ecu is not None:
+            ecu.disconnect()
+            ecu.stop()
         bus.shutdown()
 
 
@@ -258,6 +354,7 @@ def test_connect_without_preexisting_bus_emits_deprecation_warning():
     DeprecationWarning advising the caller to pass bus= to the constructor.
     """
     import warnings
+
     ecu = j1939.ElectronicControlUnit(send_message=lambda *a, **kw: None)
     try:
         with warnings.catch_warnings(record=True) as w:
@@ -278,6 +375,7 @@ def test_disconnect_before_connect_raises_runtime_error():
     would crash with AttributeError/NoneType errors).
     """
     import pytest
+
     ecu = j1939.ElectronicControlUnit(send_message=lambda *a, **kw: None)
     try:
         with pytest.raises(RuntimeError):
@@ -298,6 +396,7 @@ def test_disconnect_does_not_shutdown_external_bus():
             super().shutdown()
 
     bus = TrackingBus(channel="test_disconnect_external")
+    ecu = None
     try:
         ecu = j1939.ElectronicControlUnit(bus=bus)
         ecu.connect()
@@ -307,5 +406,6 @@ def test_disconnect_does_not_shutdown_external_bus():
             "disconnect() must not shutdown a bus that was provided externally"
         )
     finally:
-        ecu.stop()
+        if ecu is not None:
+            ecu.stop()
         bus.shutdown()
