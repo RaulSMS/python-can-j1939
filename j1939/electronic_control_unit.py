@@ -121,8 +121,29 @@ class ElectronicControlUnit:
         )
         self._timer_thread.daemon = True
 
+        # Dispatch thread: drains incoming frames from the Notifier thread and
+        # calls j1939_dll.notify() (and therefore _notify_subscribers) serially.
+        #
+        # This is Option A from threadingCheck.md.  The python-can Notifier
+        # thread previously called ecu.notify() → j1939_dll.notify() directly,
+        # blocking the OS socket reader for the entire duration of all CA
+        # callbacks.  With a dispatch queue the Notifier thread enqueues a
+        # (can_id, data, timestamp) tuple and returns to bus.recv() in ~1 µs,
+        # eliminating frame bursting and reducing the GIL hold time seen by the
+        # timer thread.
+        #
+        # Ordering is preserved: SimpleQueue is FIFO and the single dispatch
+        # thread processes frames serially — identical semantics to before.
+        logger.info("Starting ECU dispatch thread")
+        self._dispatch_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_job_thread, name="j1939.ecu dispatch_thread"
+        )
+        self._dispatch_thread.daemon = True
+
         self._protocol_thread.start()
         self._timer_thread.start()
+        self._dispatch_thread.start()
 
     def stop(self):
         """Stops the ECU background handling
@@ -154,6 +175,7 @@ class ElectronicControlUnit:
         self._timer_wakeup_queue.put(1)
         self._protocol_thread.join()
         self._timer_thread.join()
+        self._dispatch_thread.join()
 
     def register_dependent(self, dependent):
         """Register a helper whose ``stop()`` should be called by :meth:`stop`.
@@ -445,6 +467,11 @@ class ElectronicControlUnit:
         If a custom interface is used, this function must be called for each
         29-bit standard message read from the CAN bus.
 
+        The frame is enqueued onto the dispatch queue and processed by the
+        dedicated dispatch thread.  This returns to the caller (typically the
+        python-can Notifier thread) in ~1 µs regardless of how long subscriber
+        callbacks take, preventing frame bursting in the OS socket buffer.
+
         :param int can_id:
             CAN-ID of the message (always 29-bit)
         :param bytearray data:
@@ -455,7 +482,7 @@ class ElectronicControlUnit:
             seconds.
             Where possible this will be timestamped in hardware.
         """
-        self.j1939_dll.notify(can_id, data, timestamp)
+        self._dispatch_queue.put((can_id, data, timestamp))
 
     def add_bus_filters(self, filters: can.typechecking.CanFilters | None):
         """Add bus filters to the underlying CAN bus.
@@ -467,6 +494,40 @@ class ElectronicControlUnit:
         if self._bus is None:
             raise RuntimeError("Not connected to CAN bus")
         self._bus.set_filters(filters)
+
+    def _dispatch_job_thread(self):
+        """Dispatch thread: drains the incoming frame queue and calls the DLL.
+
+        Loops while the ECU is running, blocking on the dispatch queue with a
+        short timeout so it can observe ``_job_thread_end`` being set by
+        :meth:`stop`.  Uses the same ``while not self._job_thread_end.is_set()``
+        exit condition as the protocol and timer threads — no sentinel value
+        or second exit mechanism needed.
+
+        After the loop exits any frames that arrived concurrently with the stop
+        signal are drained so that in-flight TP reassembly is not truncated.
+        """
+        while not self._job_thread_end.is_set():
+            try:
+                can_id, data, timestamp = self._dispatch_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self.j1939_dll.notify(can_id, data, timestamp)
+            except Exception:
+                logger.exception("Exception in dispatch thread")
+
+        # Drain any frames that arrived between the last get() and stop() so
+        # that in-flight TP sessions are not truncated mid-reassembly.
+        while True:
+            try:
+                can_id, data, timestamp = self._dispatch_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.j1939_dll.notify(can_id, data, timestamp)
+            except Exception:
+                logger.exception("Exception in dispatch thread (drain)")
 
     def _protocol_job_thread(self):
         """Protocol thread: handles TP/BAM timeout management only.
