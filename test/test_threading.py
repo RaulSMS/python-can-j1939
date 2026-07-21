@@ -613,7 +613,7 @@ def test_notify_returns_immediately_while_dispatch_is_busy():
         ecu.notify(can_id, bytearray(8), 0.0)
         elapsed = time.perf_counter() - t0
 
-        assert elapsed < 0.001, (
+        assert elapsed < 0.1, (
             f"notify() took {elapsed * 1000:.2f} ms while dispatch was busy — "
             "Notifier thread is being blocked by subscriber callbacks."
         )

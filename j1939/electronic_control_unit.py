@@ -125,6 +125,14 @@ class ElectronicControlUnit:
         # calls j1939_dll.notify() (and therefore _notify_subscribers) serially.
         # Ordering is preserved: SimpleQueue is FIFO and the single dispatch
         # thread processes frames serially — identical semantics to before.
+        #
+        # The queue is unbounded: it trades memory for backpressure — if
+        # subscriber callbacks are slower than the incoming frame rate the queue
+        # grows without bound.  In practice the OS socket buffer provides a
+        # natural upstream limit, and the J1939 bus rates in this codebase are
+        # well within subscriber throughput.  If bounded buffering is needed,
+        # replace SimpleQueue with queue.Queue(maxsize=N) and handle the Full
+        # exception in notify() (drop, log, or block to taste).
         logger.info("Starting ECU dispatch thread")
         self._dispatch_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._dispatch_thread = threading.Thread(
@@ -136,7 +144,7 @@ class ElectronicControlUnit:
         self._timer_thread.start()
         self._dispatch_thread.start()
 
-    def stop(self):
+    def stop(self, dispatch_join_timeout: float = 3.0):
         """Stops the ECU background handling
 
         This Function explicitly stops the background handling of the ECU.
@@ -146,6 +154,13 @@ class ElectronicControlUnit:
         invoked in LIFO order. Exceptions raised by a dependent's ``stop()``
         are logged and swallowed so a single misbehaving dependent cannot
         prevent the rest of the shutdown from completing.
+
+        :param float dispatch_join_timeout:
+            Maximum seconds to wait for the dispatch thread to finish its
+            current subscriber callback before giving up and continuing
+            shutdown.  The dispatch thread is daemonic so it will not prevent
+            interpreter exit, but a warning is logged if it is still alive
+            after this timeout.  Defaults to 3s
         """
         # Snapshot dependents under lock, then mark the ECU as stopping so any
         # late registrations are rejected.
@@ -166,7 +181,13 @@ class ElectronicControlUnit:
         self._timer_wakeup_queue.put(1)
         self._protocol_thread.join()
         self._timer_thread.join()
-        self._dispatch_thread.join()
+        self._dispatch_thread.join(timeout=dispatch_join_timeout)
+        if self._dispatch_thread.is_alive():
+            logger.warning(
+                "dispatch_thread did not exit within %.1f s — a subscriber "
+                "callback may be blocking. Continuing shutdown.",
+                dispatch_join_timeout,
+            )
 
     def register_dependent(self, dependent):
         """Register a helper whose ``stop()`` should be called by :meth:`stop`.
@@ -460,8 +481,8 @@ class ElectronicControlUnit:
 
         The frame is enqueued onto the dispatch queue and processed by the
         dedicated dispatch thread.  This returns to the caller (typically the
-        python-can Notifier thread) in ~1 µs regardless of how long subscriber
-        callbacks take, preventing frame bursting in the OS socket buffer.
+        python-can Notifier thread) without running subscriber callbacks,
+        preventing frame bursting in the OS socket buffer.
 
         :param int can_id:
             CAN-ID of the message (always 29-bit)
@@ -473,6 +494,11 @@ class ElectronicControlUnit:
             seconds.
             Where possible this will be timestamped in hardware.
         """
+        if self._job_thread_end.is_set():
+            # ECU is stopping or stopped; the dispatch thread has exited or is
+            # draining. Drop the frame rather than growing the queue
+            # with no consumer.
+            return
         self._dispatch_queue.put((can_id, data, timestamp))
 
     def add_bus_filters(self, filters: can.typechecking.CanFilters | None):
