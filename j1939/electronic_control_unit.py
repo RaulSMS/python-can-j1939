@@ -123,15 +123,6 @@ class ElectronicControlUnit:
 
         # Dispatch thread: drains incoming frames from the Notifier thread and
         # calls j1939_dll.notify() (and therefore _notify_subscribers) serially.
-        #
-        # This is Option A from threadingCheck.md.  The python-can Notifier
-        # thread previously called ecu.notify() → j1939_dll.notify() directly,
-        # blocking the OS socket reader for the entire duration of all CA
-        # callbacks.  With a dispatch queue the Notifier thread enqueues a
-        # (can_id, data, timestamp) tuple and returns to bus.recv() in ~1 µs,
-        # eliminating frame bursting and reducing the GIL hold time seen by the
-        # timer thread.
-        #
         # Ordering is preserved: SimpleQueue is FIFO and the single dispatch
         # thread processes frames serially — identical semantics to before.
         logger.info("Starting ECU dispatch thread")
