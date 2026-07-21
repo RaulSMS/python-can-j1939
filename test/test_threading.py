@@ -589,9 +589,6 @@ def test_dispatch_thread_exists_and_named():
 def test_notify_returns_immediately_while_dispatch_is_busy():
     """notify() must return in well under 1 ms even when a slow subscriber
     callback is running in the dispatch thread.
-
-    This is the core guarantee of Option A: the Notifier thread (which calls
-    ecu.notify()) is never blocked by subscriber callback work.
     """
     ecu = _make_ecu()
     try:
