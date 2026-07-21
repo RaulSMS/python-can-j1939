@@ -4,10 +4,12 @@ Threading safety and lifecycle tests.
 This module tests:
 - Timer accuracy and drift prevention (heapq-based scheduling)
 - Protocol/timer thread separation (slow callbacks don't block protocol)
+- Dispatch queue: Notifier thread unblocked, ordering, drain on stop
 - Thread-safe subscriber list operations
 - MemoryAccess servicer thread lifecycle
 - Dependent registry and cascaded shutdown from ECU
 """
+
 import threading
 import time
 
@@ -25,7 +27,7 @@ def _make_ecu():
 
 def _wait_thread_exit(thread, timeout=0.5):
     """Wait for a thread to exit, polling every 10ms.
-    
+
     :param thread: The thread to wait for.
     :param timeout: Maximum time to wait in seconds.
     :return: True if thread exited, False if timeout reached.
@@ -38,7 +40,7 @@ def _wait_thread_exit(thread, timeout=0.5):
 
 def _wait_no_threads_named(name, timeout=0.5):
     """Wait until no alive threads have the given name.
-    
+
     :param name: Thread name to check for.
     :param timeout: Maximum time to wait in seconds.
     :return: True if no matching threads remain, False if timeout reached.
@@ -50,14 +52,15 @@ def _wait_no_threads_named(name, timeout=0.5):
         time.sleep(0.01)
     return False
 
+
 def test_timer_no_drift():
     """Verify heapq-based timer fires reliably and doesn't deadlock.
-    
+
     This test validates that the timer thread:
     - Fires reliably (gets all expected callbacks)
     - Doesn't deadlock or hang indefinitely
     - Doesn't accumulate extreme outlier delays (> 500ms)
-    
+
     Note: Strict interval timing is not validated on slow CI machines.
     The focus is on correctness (fire count) and absence of hangs.
     """
@@ -69,8 +72,8 @@ def test_timer_no_drift():
         timestamps.append(time.monotonic())
         if len(timestamps) >= 10:
             done.set()
-            return False   # stop rescheduling
-        return True        # reschedule
+            return False  # stop rescheduling
+        return True  # reschedule
 
     ecu.add_timer(0.050, callback)
     fired = done.wait(timeout=10.0)  # generous timeout for very slow CI
@@ -79,20 +82,20 @@ def test_timer_no_drift():
     assert fired, "Timer did not fire 10 times within 10 seconds - possible deadlock"
     assert len(timestamps) == 10, f"Expected 10 callbacks, got {len(timestamps)}"
 
-    intervals = [timestamps[i+1] - timestamps[i] for i in range(9)]
-    
+    intervals = [timestamps[i + 1] - timestamps[i] for i in range(9)]
+
     # Only check for extreme outliers that would indicate a broken timer
     # (e.g., long GC pause, system under extreme load, or actual deadlock)
     max_interval = max(intervals)
     assert max_interval < 1.0, (
-        f"Max interval was {max_interval*1000:.1f}ms, which is extreme "
+        f"Max interval was {max_interval * 1000:.1f}ms, which is extreme "
         "(expected < 1000ms even on slow CI). Timer may be deadlocked or broken."
     )
-    
+
     # Log intervals for debugging CI issues
     avg_interval = sum(intervals) / len(intervals)
     assert avg_interval > 0.025, (
-        f"Average interval was {avg_interval*1000:.1f}ms, "
+        f"Average interval was {avg_interval * 1000:.1f}ms, "
         "which is too fast (timer may be firing twice per cycle)"
     )
 
@@ -104,7 +107,7 @@ def test_slow_callback_no_protocol_impact(feeder):
 
     def slow_callback(cookie):
         slow_fired.set()
-        time.sleep(0.150)   # simulate heavy work
+        time.sleep(0.150)  # simulate heavy work
         return True
 
     feeder.ecu.add_timer(0.020, slow_callback)
@@ -115,18 +118,19 @@ def test_slow_callback_no_protocol_impact(feeder):
     # 20-byte BAM: BAM announce + 3 DT frames
     pgn_value = 0xFEC8  # arbitrary broadcast PGN
     # Build raw CAN message sequence (same pattern as test_ecu.py)
-    can_id_bam = 0x1CECFF01   # TP.CM BAM from 0x01 to global
-    can_id_dt  = 0x1CEBFF01   # TP.DT  from 0x01 to global
+    can_id_bam = 0x1CECFF01  # TP.CM BAM from 0x01 to global
+    can_id_dt = 0x1CEBFF01  # TP.DT  from 0x01 to global
 
     feeder.can_messages = [
-        (Feeder.MsgType.CANRX, can_id_bam,
-         [32, 20, 0, 3, 255, pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, 0], 0.0),
-        (Feeder.MsgType.CANRX, can_id_dt,
-         [1, 1, 2, 3, 4, 5, 6, 7], 0.0),
-        (Feeder.MsgType.CANRX, can_id_dt,
-         [2, 8, 9, 10, 11, 12, 13, 14], 0.0),
-        (Feeder.MsgType.CANRX, can_id_dt,
-         [3, 15, 16, 17, 18, 19, 20, 255], 0.0),
+        (
+            Feeder.MsgType.CANRX,
+            can_id_bam,
+            [32, 20, 0, 3, 255, pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, 0],
+            0.0,
+        ),
+        (Feeder.MsgType.CANRX, can_id_dt, [1, 1, 2, 3, 4, 5, 6, 7], 0.0),
+        (Feeder.MsgType.CANRX, can_id_dt, [2, 8, 9, 10, 11, 12, 13, 14], 0.0),
+        (Feeder.MsgType.CANRX, can_id_dt, [3, 15, 16, 17, 18, 19, 20, 255], 0.0),
     ]
 
     received = threading.Event()
@@ -152,7 +156,7 @@ def test_slow_callback_no_protocol_impact(feeder):
     feeder.ecu.remove_timer(slow_callback)
 
     assert delivered, (
-        f"BAM message was not reassembled within 400ms (elapsed {elapsed*1000:.0f}ms). "
+        f"BAM message was not reassembled within 400ms (elapsed {elapsed * 1000:.0f}ms). "
         "Slow callback may be blocking the protocol thread."
     )
 
@@ -185,9 +189,10 @@ def test_concurrent_add_remove_no_crash():
 
     assert not errors, f"Exceptions during concurrent timer ops: {errors}"
 
+
 def test_memory_access_event_latency():
     """MemoryAccess servicer thread responds to events within reasonable latency.
-    
+
     This test validates that the servicer thread wakes up and responds to events
     without excessive delay. Rather than enforcing sub-10ms latency (which is
     unrealistic on slow CI machines with variable scheduler load), we check that:
@@ -197,17 +202,20 @@ def test_memory_access_event_latency():
     from j1939.memory_access import DMState, MemoryAccess
 
     ecu = _make_ecu()
-    ca = ecu.add_ca(name=j1939.Name(
-        arbitrary_address_capable=0,
-        industry_group=j1939.Name.IndustryGroup.Industrial,
-        vehicle_system_instance=1,
-        vehicle_system=1,
-        function=1,
-        function_instance=1,
-        ecu_instance=1,
-        manufacturer_code=1,
-        identity_number=1,
-    ), device_address=0x80)
+    ca = ecu.add_ca(
+        name=j1939.Name(
+            arbitrary_address_capable=0,
+            industry_group=j1939.Name.IndustryGroup.Industrial,
+            vehicle_system_instance=1,
+            vehicle_system=1,
+            function=1,
+            function_instance=1,
+            ecu_instance=1,
+            manufacturer_code=1,
+            identity_number=1,
+        ),
+        device_address=0x80,
+    )
 
     ma = MemoryAccess(ca)
 
@@ -233,7 +241,7 @@ def test_memory_access_event_latency():
     assert callback_times, "notify callback was never called after _proceed_event.set()"
     latency = callback_times[0] - set_time[0]
     assert latency < 0.500, (
-        f"MemoryAccess notify latency was {latency*1000:.2f}ms, "
+        f"MemoryAccess notify latency was {latency * 1000:.2f}ms, "
         f"expected < 500ms (thread should not be blocked/deadlocked)"
     )
 
@@ -266,8 +274,9 @@ def test_subscribe_unsubscribe_race(feeder):
     can_id = 0x18FEC801  # broadcast from 0x01, PGN 0xFEC8
     inject_deadline = time.monotonic() + 0.5
     while time.monotonic() < inject_deadline:
-        feeder.message_queue.put((Feeder.MsgType.CANRX, can_id,
-                                  bytearray([1, 2, 3, 4, 5, 6, 7, 8]), 0.0))
+        feeder.message_queue.put(
+            (Feeder.MsgType.CANRX, can_id, bytearray([1, 2, 3, 4, 5, 6, 7, 8]), 0.0)
+        )
         time.sleep(0.01)
 
     sub_thread.join(timeout=2.0)
@@ -276,25 +285,30 @@ def test_subscribe_unsubscribe_race(feeder):
     assert not errors, f"Exceptions during subscribe/unsubscribe race: {errors}"
     assert received_count[0] > 0, "No messages were received during the race"
 
+
 def _make_ca(ecu, device_address=0x80):
     """Create a ControllerApplication with minimal valid Name."""
-    return ecu.add_ca(name=j1939.Name(
-        arbitrary_address_capable=0,
-        industry_group=j1939.Name.IndustryGroup.Industrial,
-        vehicle_system_instance=1,
-        vehicle_system=1,
-        function=1,
-        function_instance=1,
-        ecu_instance=1,
-        manufacturer_code=1,
-        identity_number=1,
-    ), device_address=device_address)
+    return ecu.add_ca(
+        name=j1939.Name(
+            arbitrary_address_capable=0,
+            industry_group=j1939.Name.IndustryGroup.Industrial,
+            vehicle_system_instance=1,
+            vehicle_system=1,
+            function=1,
+            function_instance=1,
+            ecu_instance=1,
+            manufacturer_code=1,
+            identity_number=1,
+        ),
+        device_address=device_address,
+    )
 
 
 def _j1939_threads():
     """Return list of alive threads with names starting with 'j1939.'."""
-    return [t for t in threading.enumerate()
-            if t.name.startswith('j1939.') and t.is_alive()]
+    return [
+        t for t in threading.enumerate() if t.name.startswith("j1939.") and t.is_alive()
+    ]
 
 
 class _FakeDependent:
@@ -322,37 +336,40 @@ def test_ecu_stop_cascades_to_memory_access():
     MemoryAccess(ca)
 
     # Sanity: servicer thread is running
-    assert any(t.name == 'j1939.memory_access servicer_thread' for t in _j1939_threads())
+    assert any(
+        t.name == "j1939.memory_access servicer_thread" for t in _j1939_threads()
+    )
 
     ecu.stop()
 
-    assert _wait_no_threads_named('j1939.memory_access servicer_thread', timeout=1.0), \
+    assert _wait_no_threads_named("j1939.memory_access servicer_thread", timeout=1.0), (
         "MemoryAccess servicer thread still running after ecu.stop()"
+    )
 
 
 def test_ecu_stop_cascades_lifo():
     """Dependents must be stopped in reverse registration order."""
     ecu = _make_ecu()
     log = []
-    a = _FakeDependent(log, 'A')
-    b = _FakeDependent(log, 'B')
-    c = _FakeDependent(log, 'C')
+    a = _FakeDependent(log, "A")
+    b = _FakeDependent(log, "B")
+    c = _FakeDependent(log, "C")
     ecu.register_dependent(a)
     ecu.register_dependent(b)
     ecu.register_dependent(c)
 
     ecu.stop()
 
-    assert log == ['C', 'B', 'A'], log
+    assert log == ["C", "B", "A"], log
 
 
 def test_ecu_stop_continues_on_dependent_failure():
     """A failing dependent.stop() must not prevent others from running."""
     ecu = _make_ecu()
     log = []
-    a = _FakeDependent(log, 'A')
-    b = _FakeDependent(log, 'B', raise_on_stop=True)
-    c = _FakeDependent(log, 'C')
+    a = _FakeDependent(log, "A")
+    b = _FakeDependent(log, "B", raise_on_stop=True)
+    c = _FakeDependent(log, "C")
     ecu.register_dependent(a)
     ecu.register_dependent(b)
     ecu.register_dependent(c)
@@ -360,7 +377,7 @@ def test_ecu_stop_continues_on_dependent_failure():
     ecu.stop()  # must not raise
 
     # All three should have had stop() called despite B raising.
-    assert log == ['C', 'B', 'A']
+    assert log == ["C", "B", "A"]
     # And ECU's own threads are stopped.
     assert not ecu._protocol_thread.is_alive()
     assert not ecu._timer_thread.is_alive()
@@ -378,9 +395,12 @@ def test_memory_access_explicit_stop_no_leak():
     ma.stop()
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 0.050, f"MemoryAccess.stop() took {elapsed*1000:.1f}ms, expected < 50ms"
-    assert _wait_no_threads_named('j1939.memory_access servicer_thread'), \
+    assert elapsed < 0.050, (
+        f"MemoryAccess.stop() took {elapsed * 1000:.1f}ms, expected < 50ms"
+    )
+    assert _wait_no_threads_named("j1939.memory_access servicer_thread"), (
         "Servicer thread still running after ma.stop()"
+    )
 
     ecu.stop()
 
@@ -394,7 +414,9 @@ def test_memory_access_context_manager():
     with MemoryAccess(ca) as ma:
         assert ma._job_thread.is_alive()
 
-    assert _wait_thread_exit(ma._job_thread), "Servicer thread did not stop after context exit"
+    assert _wait_thread_exit(ma._job_thread), (
+        "Servicer thread did not stop after context exit"
+    )
     ecu.stop()
 
 
@@ -415,7 +437,7 @@ def test_register_unregister_dependent_idempotent():
     """Duplicate register/unregister calls are silently handled."""
     ecu = _make_ecu()
     log = []
-    a = _FakeDependent(log, 'A')
+    a = _FakeDependent(log, "A")
 
     ecu.register_dependent(a)
     ecu.register_dependent(a)  # duplicate - silently deduped
@@ -438,12 +460,12 @@ def test_register_dependent_rejected_during_shutdown():
     """Registering new dependent during shutdown raises RuntimeError."""
     ecu = _make_ecu()
     log = []
-    blocker = _FakeDependent(log, 'blocker')
-    late = _FakeDependent(log, 'late')
+    blocker = _FakeDependent(log, "blocker")
+    late = _FakeDependent(log, "late")
     captured = []
 
     def blocker_stop():
-        log.append('blocker')
+        log.append("blocker")
         try:
             ecu.register_dependent(late)
         except RuntimeError as e:
@@ -455,7 +477,7 @@ def test_register_dependent_rejected_during_shutdown():
     ecu.stop()
 
     assert captured, "Expected RuntimeError when registering during shutdown"
-    assert log == ['blocker']
+    assert log == ["blocker"]
 
 
 def test_send_pgn_concurrent_no_crash():
@@ -512,8 +534,9 @@ def test_send_pgn_j1939_21_buffer_lock_no_race():
     def send_once():
         try:
             barrier.wait()  # start both threads simultaneously
-            result = ecu.send_pgn(0, 0xFE, ParameterGroupNumber.Address.GLOBAL,
-                                  6, 0x01, list(range(20)))
+            result = ecu.send_pgn(
+                0, 0xFE, ParameterGroupNumber.Address.GLOBAL, 6, 0x01, list(range(20))
+            )
             results.append(result)
         except Exception as exc:
             errors.append(exc)
@@ -545,7 +568,130 @@ def test_dependent_registration_stress_no_leak():
         ma = MemoryAccess(ca)
         ma.stop()
 
-    assert _wait_no_threads_named('j1939.memory_access servicer_thread', timeout=1.0), \
+    assert _wait_no_threads_named("j1939.memory_access servicer_thread", timeout=1.0), (
         "Leaked servicer thread(s) after stress test"
+    )
 
     ecu.stop()
+
+
+def test_dispatch_thread_exists_and_named():
+    """ECU must have a live, correctly named dispatch thread after construction."""
+    ecu = _make_ecu()
+    try:
+        assert hasattr(ecu, "_dispatch_thread"), "ECU has no _dispatch_thread attribute"
+        assert ecu._dispatch_thread.is_alive(), "dispatch thread is not alive"
+        assert ecu._dispatch_thread.name == "j1939.ecu dispatch_thread"
+    finally:
+        ecu.stop()
+
+
+def test_notify_returns_immediately_while_dispatch_is_busy():
+    """notify() must return in well under 1 ms even when a slow subscriber
+    callback is running in the dispatch thread.
+
+    This is the core guarantee of Option A: the Notifier thread (which calls
+    ecu.notify()) is never blocked by subscriber callback work.
+    """
+    ecu = _make_ecu()
+    try:
+        callback_entered = threading.Event()
+        callback_release = threading.Event()
+
+        def slow_subscriber(priority, pgn, sa, timestamp, data):
+            callback_entered.set()
+            callback_release.wait()  # block until the test releases it
+
+        ecu.subscribe(slow_subscriber)
+        # PGN 0xFF00 — PDU2 broadcast, SA 0x01
+        can_id = 0x18FF0001
+
+        # Fire the first notify so the slow callback is now running
+        ecu.notify(can_id, bytearray(8), 0.0)
+        assert callback_entered.wait(timeout=2.0), "Slow callback never started"
+
+        # The dispatch thread is now stuck in slow_subscriber.
+        # notify() must still return instantly from the Notifier thread's POV.
+        t0 = time.perf_counter()
+        ecu.notify(can_id, bytearray(8), 0.0)
+        elapsed = time.perf_counter() - t0
+
+        assert elapsed < 0.001, (
+            f"notify() took {elapsed * 1000:.2f} ms while dispatch was busy — "
+            "Notifier thread is being blocked by subscriber callbacks."
+        )
+    finally:
+        callback_release.set()  # unblock callback so threads can exit cleanly
+        ecu.stop()
+
+
+def test_dispatch_preserves_frame_order():
+    """Frames must be delivered to subscribers in the order notify() was called."""
+    ecu = _make_ecu()
+    try:
+        received_sas = []
+        done = threading.Event()
+        expected_count = 10
+
+        def record(priority, pgn, sa, timestamp, data):
+            received_sas.append(sa)
+            if len(received_sas) >= expected_count:
+                done.set()
+
+        ecu.subscribe(record)
+
+        # Inject frames with SA = 0..9 in order; PDU2 broadcast PGN
+        for sa in range(expected_count):
+            can_id = 0x18FF0000 | sa
+            ecu.notify(can_id, bytearray(8), 0.0)
+
+        assert done.wait(timeout=2.0), "Not all frames were delivered"
+        assert received_sas == list(range(expected_count)), (
+            f"Frame delivery order incorrect: {received_sas}"
+        )
+    finally:
+        ecu.stop()
+
+
+def test_dispatch_thread_stops_cleanly_on_ecu_stop():
+    """The dispatch thread must exit within 500 ms of ecu.stop()."""
+    ecu = _make_ecu()
+    dispatch_thread = ecu._dispatch_thread
+    assert dispatch_thread.is_alive()
+
+    ecu.stop()
+
+    assert _wait_thread_exit(dispatch_thread, timeout=0.5), (
+        "dispatch_thread did not exit within 500 ms of ecu.stop()"
+    )
+
+
+def test_dispatch_drains_queued_frames_before_stop():
+    """Frames enqueued just before stop() must still be delivered.
+
+    The dispatch thread drains the queue after _job_thread_end is set, so
+    in-flight frames are not silently dropped on shutdown.
+    """
+    ecu = _make_ecu()
+    try:
+        received = []
+        done = threading.Event()
+        n = 5
+
+        def record(priority, pgn, sa, timestamp, data):
+            received.append(sa)
+            if len(received) >= n:
+                done.set()
+
+        ecu.subscribe(record)
+
+        # Enqueue several frames then stop immediately
+        for sa in range(n):
+            ecu.notify(0x18FF0000 | sa, bytearray(8), 0.0)
+    finally:
+        ecu.stop()
+
+    # After stop(), drain should have processed everything already enqueued
+    assert len(received) == n, (
+        f"Expected {n} frames after stop-drain, got {len(received)}: {received}"
+    )
