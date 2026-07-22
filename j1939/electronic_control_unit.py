@@ -30,6 +30,7 @@ class ElectronicControlUnit:
         minimum_tp_bam_dt_interval=None,
         send_message=None,
         bus: can.BusABC | None = None,
+        dispatch_queue_size: int = 1000,
     ):
         """
         :param data_link_layer:
@@ -44,6 +45,12 @@ class ElectronicControlUnit:
             optional callback function to send a raw CAN message to the bus. If not provided, the default implementation will be used, which sends messages via the python-can bus.
         :param bus:
             optional python-can :class:`can.BusABC` instance. If not provided, the ECU will not be connected to a bus until :meth:`connect` is called.
+        :param int dispatch_queue_size:
+            Maximum number of CAN frames that may be buffered in the dispatch
+            queue between the python-can Notifier thread and the ECU dispatch
+            thread. If the queue is full when a new frame arrives the frame is
+            dropped and a warning is logged (suppressed until the queue drains).
+            Defaults to 1000.
         """
         if send_message:
             self.send_message = send_message
@@ -123,18 +130,21 @@ class ElectronicControlUnit:
 
         # Dispatch thread: drains incoming frames from the Notifier thread and
         # calls j1939_dll.notify() (and therefore _notify_subscribers) serially.
-        # Ordering is preserved: SimpleQueue is FIFO and the single dispatch
+        # Ordering is preserved: the queue is FIFO and the single dispatch
         # thread processes frames serially — identical semantics to before.
         #
-        # The queue is unbounded: it trades memory for backpressure — if
-        # subscriber callbacks are slower than the incoming frame rate the queue
-        # grows without bound.  In practice the OS socket buffer provides a
-        # natural upstream limit, and the J1939 bus rates in this codebase are
-        # well within subscriber throughput.  If bounded buffering is needed,
-        # replace SimpleQueue with queue.Queue(maxsize=N) and handle the Full
-        # exception in notify() (drop, log, or block to taste).
+        # The queue is bounded (maxsize=dispatch_queue_size, default 1000).
+        # When full, notify() drops the incoming frame and logs a warning.
+        # The warning is suppressed after the first drop and re-emitted as a
+        # summary once the queue has room again, to avoid log flooding.
+        # Drop-tracking state is only accessed from the python-can Notifier
+        # thread (the sole caller of notify()), so no locking is required.
         logger.info("Starting ECU dispatch thread")
-        self._dispatch_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._dispatch_queue: queue.Queue = queue.Queue(maxsize=dispatch_queue_size)
+        # Number of frames dropped since the last time the queue drained.
+        self._dispatch_queue_drop_count: int = 0
+        # True while the queue is at capacity and frames are being dropped.
+        self._dispatch_queue_dropped: bool = False
         self._dispatch_thread = threading.Thread(
             target=self._dispatch_job_thread, name="j1939.ecu dispatch_thread"
         )
@@ -480,9 +490,14 @@ class ElectronicControlUnit:
         29-bit standard message read from the CAN bus.
 
         The frame is enqueued onto the dispatch queue and processed by the
-        dedicated dispatch thread.  This returns to the caller (typically the
-        python-can Notifier thread) without running subscriber callbacks,
-        preventing frame bursting in the OS socket buffer.
+        dedicated dispatch thread.  This returns quickly to the caller
+        (typically the python-can Notifier thread) without waiting for
+        subscriber callbacks to complete.
+
+        If the dispatch queue is full the frame is dropped rather than
+        blocking.  A warning is logged on the first drop and suppressed until
+        the queue drains, at which point a summary of the total drop count is
+        logged.
 
         :param int can_id:
             CAN-ID of the message (always 29-bit)
@@ -499,7 +514,24 @@ class ElectronicControlUnit:
             # draining. Drop the frame rather than growing the queue
             # with no consumer.
             return
-        self._dispatch_queue.put((can_id, data, timestamp))
+        try:
+            self._dispatch_queue.put_nowait((can_id, data, timestamp))
+            if self._dispatch_queue_dropped:
+                # Queue has room again — emit the suppressed summary and reset.
+                logger.warning(
+                    "dispatch_queue drained: %d frame(s) were dropped while the queue was full",
+                    self._dispatch_queue_drop_count,
+                )
+                self._dispatch_queue_dropped = False
+                self._dispatch_queue_drop_count = 0
+        except queue.Full:
+            self._dispatch_queue_drop_count += 1
+            if not self._dispatch_queue_dropped:
+                logger.warning(
+                    "dispatch_queue full (maxsize=%d): dropping incoming frames until queue drains",
+                    self._dispatch_queue.maxsize,
+                )
+                self._dispatch_queue_dropped = True
 
     def add_bus_filters(self, filters: can.typechecking.CanFilters | None):
         """Add bus filters to the underlying CAN bus.

@@ -587,7 +587,7 @@ def test_dispatch_thread_exists_and_named():
 
 
 def test_notify_returns_immediately_while_dispatch_is_busy():
-    """notify() must return in well under 1 ms even when a slow subscriber
+    """notify() must return well under 100 ms even when a slow subscriber
     callback is running in the dispatch thread.
     """
     ecu = _make_ecu()
@@ -692,3 +692,71 @@ def test_dispatch_drains_queued_frames_before_stop():
     assert len(received) == n, (
         f"Expected {n} frames after stop-drain, got {len(received)}: {received}"
     )
+
+
+def test_dispatch_queue_drop_on_full():
+    """When the dispatch queue is full, notify() drops frames without blocking
+    or raising.  The drop counter increments and the dropped flag is set.
+    Once the queue drains the state resets.
+    """
+    # Use a tiny queue so it is easy to fill.
+    ecu = j1939.ElectronicControlUnit(
+        send_message=lambda *a, **kw: None,
+        dispatch_queue_size=5,
+    )
+    try:
+        callback_entered = threading.Event()
+        callback_release = threading.Event()
+
+        def blocking_subscriber(priority, pgn, sa, timestamp, data):
+            callback_entered.set()
+            callback_release.wait()
+
+        ecu.subscribe(blocking_subscriber)
+
+        # Trigger the first frame so the dispatch thread is blocked inside the
+        # slow callback, preventing the queue from draining.
+        can_id = 0x18FF0001
+        ecu.notify(can_id, bytearray(8), 0.0)
+        assert callback_entered.wait(timeout=2.0), "Blocking subscriber never entered"
+
+        # Queue can hold 5 items; one is already consumed (dispatch thread is
+        # inside the callback).  Fill and then overflow it.
+        for _ in range(10):
+            ecu.notify(can_id, bytearray(8), 0.0)
+
+        # Some frames must have been dropped (queue size 5, we sent 10 extra).
+        assert ecu._dispatch_queue_drop_count > 0, (
+            "Expected dropped frames but drop_count is 0"
+        )
+        assert ecu._dispatch_queue_dropped is True, (
+            "Expected _dispatch_queue_dropped to be True while queue is full"
+        )
+
+        # Release the blocking callback so the queue drains.
+        callback_release.set()
+
+        # Wait for the queue to drain fully, then send one more frame to
+        # trigger the "success path" of put_nowait which resets the drop state.
+        deadline = time.monotonic() + 2.0
+        while ecu._dispatch_queue.qsize() > 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        # One more notify() to trigger the drain-reset path in notify().
+        ecu.notify(can_id, bytearray(8), 0.0)
+
+        # Give a moment for the reset to propagate (it happens synchronously in
+        # the put_nowait success branch, so it should be immediate).
+        deadline = time.monotonic() + 2.0
+        while ecu._dispatch_queue_dropped and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert not ecu._dispatch_queue_dropped, (
+            "dispatch_queue_dropped flag was not cleared after queue drained"
+        )
+        assert ecu._dispatch_queue_drop_count == 0, (
+            "dispatch_queue_drop_count was not reset after queue drained"
+        )
+    finally:
+        callback_release.set()  # ensure unblocked even if test fails early
+        ecu.stop()
