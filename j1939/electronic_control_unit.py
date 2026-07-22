@@ -30,6 +30,7 @@ class ElectronicControlUnit:
         minimum_tp_bam_dt_interval=None,
         send_message=None,
         bus: can.BusABC | None = None,
+        dispatch_queue_size: int = 1000,
     ):
         """
         :param data_link_layer:
@@ -44,6 +45,12 @@ class ElectronicControlUnit:
             optional callback function to send a raw CAN message to the bus. If not provided, the default implementation will be used, which sends messages via the python-can bus.
         :param bus:
             optional python-can :class:`can.BusABC` instance. If not provided, the ECU will not be connected to a bus until :meth:`connect` is called.
+        :param int dispatch_queue_size:
+            Maximum number of CAN frames that may be buffered in the dispatch
+            queue between the python-can Notifier thread and the ECU dispatch
+            thread. If the queue is full when a new frame arrives the frame is
+            dropped and a warning is logged (suppressed until the queue drains).
+            Defaults to 1000.
         """
         if send_message:
             self.send_message = send_message
@@ -121,10 +128,33 @@ class ElectronicControlUnit:
         )
         self._timer_thread.daemon = True
 
+        # Dispatch thread: drains incoming frames from the Notifier thread and
+        # calls j1939_dll.notify() (and therefore _notify_subscribers) serially.
+        # Ordering is preserved: the queue is FIFO and the single dispatch
+        # thread processes frames serially — identical semantics to before.
+        #
+        # The queue is bounded (maxsize=dispatch_queue_size, default 1000).
+        # When full, notify() drops the incoming frame and logs a warning.
+        # The warning is suppressed after the first drop and re-emitted as a
+        # summary once the queue has room again, to avoid log flooding.
+        # Drop-tracking state is only accessed from the python-can Notifier
+        # thread (the sole caller of notify()), so no locking is required.
+        logger.info("Starting ECU dispatch thread")
+        self._dispatch_queue: queue.Queue = queue.Queue(maxsize=dispatch_queue_size)
+        # Number of frames dropped since the last time the queue drained.
+        self._dispatch_queue_drop_count: int = 0
+        # True while the queue is at capacity and frames are being dropped.
+        self._dispatch_queue_dropped: bool = False
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_job_thread, name="j1939.ecu dispatch_thread"
+        )
+        self._dispatch_thread.daemon = True
+
         self._protocol_thread.start()
         self._timer_thread.start()
+        self._dispatch_thread.start()
 
-    def stop(self):
+    def stop(self, dispatch_join_timeout: float = 3.0):
         """Stops the ECU background handling
 
         This Function explicitly stops the background handling of the ECU.
@@ -134,6 +164,13 @@ class ElectronicControlUnit:
         invoked in LIFO order. Exceptions raised by a dependent's ``stop()``
         are logged and swallowed so a single misbehaving dependent cannot
         prevent the rest of the shutdown from completing.
+
+        :param float dispatch_join_timeout:
+            Maximum seconds to wait for the dispatch thread to finish its
+            current subscriber callback before giving up and continuing
+            shutdown.  The dispatch thread is daemonic so it will not prevent
+            interpreter exit, but a warning is logged if it is still alive
+            after this timeout.  Defaults to 3s
         """
         # Snapshot dependents under lock, then mark the ECU as stopping so any
         # late registrations are rejected.
@@ -154,6 +191,13 @@ class ElectronicControlUnit:
         self._timer_wakeup_queue.put(1)
         self._protocol_thread.join()
         self._timer_thread.join()
+        self._dispatch_thread.join(timeout=dispatch_join_timeout)
+        if self._dispatch_thread.is_alive():
+            logger.warning(
+                "dispatch_thread did not exit within %.1f s — a subscriber "
+                "callback may be blocking. Continuing shutdown.",
+                dispatch_join_timeout,
+            )
 
     def register_dependent(self, dependent):
         """Register a helper whose ``stop()`` should be called by :meth:`stop`.
@@ -445,6 +489,16 @@ class ElectronicControlUnit:
         If a custom interface is used, this function must be called for each
         29-bit standard message read from the CAN bus.
 
+        The frame is enqueued onto the dispatch queue and processed by the
+        dedicated dispatch thread.  This returns quickly to the caller
+        (typically the python-can Notifier thread) without waiting for
+        subscriber callbacks to complete.
+
+        If the dispatch queue is full the frame is dropped rather than
+        blocking.  A warning is logged on the first drop and suppressed until
+        the queue drains, at which point a summary of the total drop count is
+        logged.
+
         :param int can_id:
             CAN-ID of the message (always 29-bit)
         :param bytearray data:
@@ -455,7 +509,29 @@ class ElectronicControlUnit:
             seconds.
             Where possible this will be timestamped in hardware.
         """
-        self.j1939_dll.notify(can_id, data, timestamp)
+        if self._job_thread_end.is_set():
+            # ECU is stopping or stopped; the dispatch thread has exited or is
+            # draining. Drop the frame rather than growing the queue
+            # with no consumer.
+            return
+        try:
+            self._dispatch_queue.put_nowait((can_id, data, timestamp))
+            if self._dispatch_queue_dropped:
+                # Queue has room again — emit the suppressed summary and reset.
+                logger.warning(
+                    "dispatch_queue drained: %d frame(s) were dropped while the queue was full",
+                    self._dispatch_queue_drop_count,
+                )
+                self._dispatch_queue_dropped = False
+                self._dispatch_queue_drop_count = 0
+        except queue.Full:
+            self._dispatch_queue_drop_count += 1
+            if not self._dispatch_queue_dropped:
+                logger.warning(
+                    "dispatch_queue full (maxsize=%d): dropping incoming frames until queue drains",
+                    self._dispatch_queue.maxsize,
+                )
+                self._dispatch_queue_dropped = True
 
     def add_bus_filters(self, filters: can.typechecking.CanFilters | None):
         """Add bus filters to the underlying CAN bus.
@@ -467,6 +543,40 @@ class ElectronicControlUnit:
         if self._bus is None:
             raise RuntimeError("Not connected to CAN bus")
         self._bus.set_filters(filters)
+
+    def _dispatch_job_thread(self):
+        """Dispatch thread: drains the incoming frame queue and calls the DLL.
+
+        Loops while the ECU is running, blocking on the dispatch queue with a
+        short timeout so it can observe ``_job_thread_end`` being set by
+        :meth:`stop`.  Uses the same ``while not self._job_thread_end.is_set()``
+        exit condition as the protocol and timer threads — no sentinel value
+        or second exit mechanism needed.
+
+        After the loop exits any frames that arrived concurrently with the stop
+        signal are drained so that in-flight TP reassembly is not truncated.
+        """
+        while not self._job_thread_end.is_set():
+            try:
+                can_id, data, timestamp = self._dispatch_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self.j1939_dll.notify(can_id, data, timestamp)
+            except Exception:
+                logger.exception("Exception in dispatch thread")
+
+        # Drain any frames that arrived between the last get() and stop() so
+        # that in-flight TP sessions are not truncated mid-reassembly.
+        while True:
+            try:
+                can_id, data, timestamp = self._dispatch_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.j1939_dll.notify(can_id, data, timestamp)
+            except Exception:
+                logger.exception("Exception in dispatch thread (drain)")
 
     def _protocol_job_thread(self):
         """Protocol thread: handles TP/BAM timeout management only.
