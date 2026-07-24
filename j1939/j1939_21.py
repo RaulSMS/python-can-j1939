@@ -120,7 +120,7 @@ class J1939_21:
                     "num_packages": num_packets,
                     "data": data,
                     "state": self.SendBufferState.SENDING_BM,
-                    "deadline": time.time() + self._minimum_tp_bam_dt_interval,
+                    "deadline": time.monotonic() + self._minimum_tp_bam_dt_interval,
                     "src_address": src_address,
                     "dest_address": ParameterGroupNumber.Address.GLOBAL,
                     "next_packet_to_send": 0,
@@ -146,7 +146,7 @@ class J1939_21:
                     "num_packages": num_packets,
                     "data": data,
                     "state": self.SendBufferState.WAITING_CTS,
-                    "deadline": time.time() + self.Timeout.T3,
+                    "deadline": time.monotonic() + self.Timeout.T3,
                     "src_address": src_address,
                     "dest_address": pdu_specific,
                     "next_packet_to_send": 0,
@@ -174,7 +174,7 @@ class J1939_21:
                 if buffer_hash in self._snd_buffer:
                     # There is already a sequence active for this pair
                     # put in que
-                    self._snd_que[pgn.value] = {'buffer_hash': buffer_hash,
+                    self._snd_que[buffer_hash] = {'buffer_hash': buffer_hash,
                                           'pdu_specific': pdu_specific,
                                           'priority': priority,
                                           'src_address':src_address,
@@ -192,6 +192,12 @@ class J1939_21:
 
         next_wakeup = now + 5.0 # wakeup in 5 seconds
 
+
+        # get from que if buffer is empty
+        if not bool(self._snd_buffer):
+            key = next(iter(self._snd_que.items()))
+            self._put_multi_msg(**self._snd_que.pop(key))
+        
         with self._buffer_lock:
             # check receive buffers for timeout
             for bufid in list(self._rcv_buffer):
@@ -208,13 +214,6 @@ class J1939_21:
                             self.__send_tp_abort(buf['dest_address'], buf['src_address'], self.ConnectionAbortReason.TIMEOUT, buf['pgn'])
                         # TODO: should we notify our CAs about the cancelled transfer?
                         del self._rcv_buffer[bufid]
-
-            # get from que if buffer is empty
-            if not bool(self._snd_buffer):
-                for key, value in self._snd_que.items():
-                    self._put_multi_msg(**value)
-                    self._snd_que.pop(key)
-                    break
 
             # check send buffers
             for bufid in list(self._snd_buffer):
