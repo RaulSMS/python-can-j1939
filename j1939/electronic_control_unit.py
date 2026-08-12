@@ -5,6 +5,7 @@ import logging
 import queue
 import threading
 import time
+import warnings
 
 import can
 from can import Listener
@@ -17,20 +18,49 @@ from .parameter_group_number import ParameterGroupNumber
 
 logger = logging.getLogger(__name__)
 
+
 class ElectronicControlUnit:
     """ElectronicControlUnit (ECU) holding one or more ControllerApplications (CAs)."""
 
-
-    def __init__(self, data_link_layer='j1939-21', max_cmdt_packets=1, minimum_tp_rts_cts_dt_interval=None, minimum_tp_bam_dt_interval=None, send_message=None):
+    def __init__(
+        self,
+        data_link_layer="j1939-21",
+        max_cmdt_packets=1,
+        minimum_tp_rts_cts_dt_interval=None,
+        minimum_tp_bam_dt_interval=None,
+        send_message=None,
+        bus: can.BusABC | None = None,
+        dispatch_queue_size: int = 1000,
+    ):
         """
         :param data_link_layer:
             specify data-link-layer, 'j1939-21' or 'j1939-22'
+        :param max_cmdt_packets:
+            maximum number of segments that can be sent in one transport protocol session (1-255)
+        :param minimum_tp_rts_cts_dt_interval:
+            minimum time in seconds between RTS/CTS/DT messages (default: None, which means 0.05s for j1939-21 and 0.01s for j1939-22)
+        :param minimum_tp_bam_dt_interval:
+            minimum time in seconds between BAM/DT messages (default: None, which means 0.05s for j1939-21 and 0.01s for j1939-22)
+        :param send_message:
+            optional callback function to send a raw CAN message to the bus. If not provided, the default implementation will be used, which sends messages via the python-can bus.
+        :param bus:
+            optional python-can :class:`can.BusABC` instance. If not provided, the ECU will not be connected to a bus until :meth:`connect` is called.
+        :param int dispatch_queue_size:
+            Maximum number of CAN frames that may be buffered in the dispatch
+            queue between the python-can Notifier thread and the ECU dispatch
+            thread. If the queue is full when a new frame arrives the frame is
+            dropped and a warning is logged (suppressed until the queue drains).
+            Defaults to 1000.
         """
         if send_message:
             self.send_message = send_message
 
         #: A python-can :class:`can.BusABC` instance
-        self._bus = None
+        self._bus = bus
+        # TODO: remove this once the deprecated connect() path is removed.  This is only used to track if the bus was created by this ECU or passed in by the user.
+        self._bus_created = (
+            False  # True if the bus was created by this ECU (deprecated connect() path)
+        )
         # Locking object for send
         self._send_lock = threading.Lock()
 
@@ -38,12 +68,30 @@ class ElectronicControlUnit:
             raise ValueError("max number of segments that can be sent is 0xFF")
 
         # set data link layer
-        if data_link_layer == 'j1939-21':
-            self.j1939_dll = J1939_21(self.send_message, self._protocol_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
-        elif data_link_layer == 'j1939-22':
-            self.j1939_dll = J1939_22(self.send_message, self._protocol_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
+        if data_link_layer == "j1939-21":
+            self.j1939_dll = J1939_21(
+                self.send_message,
+                self._protocol_wakeup,
+                self._notify_subscribers,
+                max_cmdt_packets,
+                minimum_tp_rts_cts_dt_interval,
+                minimum_tp_bam_dt_interval,
+                self._is_message_acceptable,
+            )
+        elif data_link_layer == "j1939-22":
+            self.j1939_dll = J1939_22(
+                self.send_message,
+                self._protocol_wakeup,
+                self._notify_subscribers,
+                max_cmdt_packets,
+                minimum_tp_rts_cts_dt_interval,
+                minimum_tp_bam_dt_interval,
+                self._is_message_acceptable,
+            )
         else:
-            raise ValueError("either 'j1939-21' or 'j1939-22' must be provided for data link layer")
+            raise ValueError(
+                "either 'j1939-21' or 'j1939-22' must be provided for data link layer"
+            )
 
         #: Includes at least MessageListener.
         self._listeners = [MessageListener(self)]
@@ -68,21 +116,45 @@ class ElectronicControlUnit:
         logger.info("Starting ECU protocol thread")
         self._protocol_wakeup_queue = queue.Queue()
         self._protocol_thread = threading.Thread(
-            target=self._protocol_job_thread, name='j1939.ecu protocol_thread')
+            target=self._protocol_job_thread, name="j1939.ecu protocol_thread"
+        )
         self._protocol_thread.daemon = True
 
         # Timer thread: owns application cyclic callbacks only
         logger.info("Starting ECU timer thread")
         self._timer_wakeup_queue = queue.Queue()
         self._timer_thread = threading.Thread(
-            target=self._timer_job_thread, name='j1939.ecu timer_thread')
+            target=self._timer_job_thread, name="j1939.ecu timer_thread"
+        )
         self._timer_thread.daemon = True
+
+        # Dispatch thread: drains incoming frames from the Notifier thread and
+        # calls j1939_dll.notify() (and therefore _notify_subscribers) serially.
+        # Ordering is preserved: the queue is FIFO and the single dispatch
+        # thread processes frames serially — identical semantics to before.
+        #
+        # The queue is bounded (maxsize=dispatch_queue_size, default 1000).
+        # When full, notify() drops the incoming frame and logs a warning.
+        # The warning is suppressed after the first drop and re-emitted as a
+        # summary once the queue has room again, to avoid log flooding.
+        # Drop-tracking state is only accessed from the python-can Notifier
+        # thread (the sole caller of notify()), so no locking is required.
+        logger.info("Starting ECU dispatch thread")
+        self._dispatch_queue: queue.Queue = queue.Queue(maxsize=dispatch_queue_size)
+        # Number of frames dropped since the last time the queue drained.
+        self._dispatch_queue_drop_count: int = 0
+        # True while the queue is at capacity and frames are being dropped.
+        self._dispatch_queue_dropped: bool = False
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_job_thread, name="j1939.ecu dispatch_thread"
+        )
+        self._dispatch_thread.daemon = True
 
         self._protocol_thread.start()
         self._timer_thread.start()
+        self._dispatch_thread.start()
 
-
-    def stop(self):
+    def stop(self, dispatch_join_timeout: float = 3.0):
         """Stops the ECU background handling
 
         This Function explicitly stops the background handling of the ECU.
@@ -92,6 +164,13 @@ class ElectronicControlUnit:
         invoked in LIFO order. Exceptions raised by a dependent's ``stop()``
         are logged and swallowed so a single misbehaving dependent cannot
         prevent the rest of the shutdown from completing.
+
+        :param float dispatch_join_timeout:
+            Maximum seconds to wait for the dispatch thread to finish its
+            current subscriber callback before giving up and continuing
+            shutdown.  The dispatch thread is daemonic so it will not prevent
+            interpreter exit, but a warning is logged if it is still alive
+            after this timeout.  Defaults to 3s
         """
         # Snapshot dependents under lock, then mark the ECU as stopping so any
         # late registrations are rejected.
@@ -112,6 +191,13 @@ class ElectronicControlUnit:
         self._timer_wakeup_queue.put(1)
         self._protocol_thread.join()
         self._timer_thread.join()
+        self._dispatch_thread.join(timeout=dispatch_join_timeout)
+        if self._dispatch_thread.is_alive():
+            logger.warning(
+                "dispatch_thread did not exit within %.1f s — a subscriber "
+                "callback may be blocking. Continuing shutdown.",
+                dispatch_join_timeout,
+            )
 
     def register_dependent(self, dependent):
         """Register a helper whose ``stop()`` should be called by :meth:`stop`.
@@ -132,13 +218,13 @@ class ElectronicControlUnit:
         :raises TypeError:
             If ``dependent`` does not expose a callable ``stop`` attribute.
         """
-        if not callable(getattr(dependent, 'stop', None)):
-            raise TypeError(
-                "dependent must expose a callable stop() method")
+        if not callable(getattr(dependent, "stop", None)):
+            raise TypeError("dependent must expose a callable stop() method")
         with self._dependents_lock:
             if self._stopping:
                 raise RuntimeError(
-                    "Cannot register a dependent while the ECU is stopping")
+                    "Cannot register a dependent while the ECU is stopping"
+                )
             for existing in self._dependents:
                 if existing is dependent:
                     return
@@ -151,8 +237,7 @@ class ElectronicControlUnit:
             The object previously passed to :meth:`register_dependent`.
         """
         with self._dependents_lock:
-            self._dependents = [
-                d for d in self._dependents if d is not dependent]
+            self._dependents = [d for d in self._dependents if d is not dependent]
 
     def add_timer(self, delta_time, callback, cookie=None):
         """Adds a callback to the list of timer events
@@ -164,8 +249,10 @@ class ElectronicControlUnit:
         """
         deadline = time.monotonic() + delta_time
         with self._timer_events_lock:
-            heapq.heappush(self._timer_events,
-                           (deadline, self._timer_seq, callback, cookie, delta_time))
+            heapq.heappush(
+                self._timer_events,
+                (deadline, self._timer_seq, callback, cookie, delta_time),
+            )
             self._timer_seq += 1
         self._timer_wakeup_queue.put(1)
 
@@ -198,7 +285,22 @@ class ElectronicControlUnit:
         :raises can.CanError:
             When connection fails.
         """
-        self._bus = can.interface.Bus(*args, **kwargs)
+        # TODO: since bus creation has been an existing feature, keeping backwards compatibility with the old way of creating a bus.
+        # But this should be refactored in the future to use a more explicit way of creating a bus.
+        if self._bus is None:
+            warnings.warn(
+                "Creating a bus in connect() is deprecated; pass a bus instance to the constructor instead",
+                category=DeprecationWarning,
+                stacklevel=2,
+            )
+            self._bus = can.interface.Bus(*args, **kwargs)
+            self._bus_created = True
+        elif args or kwargs:
+            raise ValueError(
+                "connect() was called with bus configuration arguments but a bus "
+                "instance was already provided to the constructor. Pass arguments "
+                "to the constructor instead, or call connect() with no arguments."
+            )
         logger.info("Connected to '%s'", self._bus.channel_info)
         self._notifier = can.Notifier(self._bus, self._listeners, 1)
         return self._bus
@@ -209,11 +311,16 @@ class ElectronicControlUnit:
         Must be overridden in a subclass if a custom interface is used.
         """
         if self._notifier is None:
-            raise RuntimeError("notifier is not set; call connect() before disconnect()")
+            raise RuntimeError(
+                "notifier is not set; call connect() before disconnect()"
+            )
         if self._bus is None:
             raise RuntimeError("bus is not set; call connect() before disconnect()")
         self._notifier.stop()
-        self._bus.shutdown()
+        self._notifier = None
+        if self._bus_created:
+            self._bus.shutdown()
+            self._bus_created = False
         self._bus = None
 
     def subscribe(self, callback, device_address=None):
@@ -228,7 +335,7 @@ class ElectronicControlUnit:
             Note: TP.CMDT will only be received if the destination address is bound to a controller application.
         """
         with self._subscribers_lock:
-            self._subscribers.append({'cb': callback, 'dev_adr': device_address})
+            self._subscribers.append({"cb": callback, "dev_adr": device_address})
 
     def unsubscribe(self, callback):
         """Stop listening for message.
@@ -237,8 +344,7 @@ class ElectronicControlUnit:
             Function to call when message is received.
         """
         with self._subscribers_lock:
-            self._subscribers = [d for d in self._subscribers if d['cb'] != callback]
-
+            self._subscribers = [d for d in self._subscribers if d["cb"] != callback]
 
     def add_ca(self, **kwargs):
         """Add a ControllerApplication to the ECU.
@@ -257,13 +363,15 @@ class ElectronicControlUnit:
 
         :rtype: r3964.ControllerApplication
         """
-        if 'controller_application' in kwargs:
-            ca = kwargs['controller_application']
+        if "controller_application" in kwargs:
+            ca = kwargs["controller_application"]
         else:
-            if 'name' not in kwargs:
-                raise ValueError("either 'controller_application' or 'name' must be provided")
-            name = kwargs.get('name')
-            da = kwargs.get('device_address', None)
+            if "name" not in kwargs:
+                raise ValueError(
+                    "either 'controller_application' or 'name' must be provided"
+                )
+            name = kwargs.get("name")
+            da = kwargs.get("device_address", None)
             ca = ControllerApplication(name, da)
 
         self.j1939_dll.add_ca(ca)
@@ -300,20 +408,28 @@ class ElectronicControlUnit:
             self._notifier.add_listener(listener)
 
     def remove_bus(self):
-        """Remove the bus from the ECU.
-        """
+        """Remove the bus from the ECU."""
         self._bus = None
 
     def remove_notifier(self):
-        """Remove the notifier from the ECU.
-        """
+        """Remove the notifier from the ECU."""
         if self._notifier is None:
             return
         for listener in self._listeners:
             self._notifier.remove_listener(listener)
         self._notifier = None
 
-    def send_pgn(self, data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit=0, frame_format=FrameFormat.FEFF):
+    def send_pgn(
+        self,
+        data_page,
+        pdu_format,
+        pdu_specific,
+        priority,
+        src_address,
+        data,
+        time_limit=0,
+        frame_format=FrameFormat.FEFF,
+    ):
         """send a pgn
         :param int data_page: data page
         :param int pdu_format: pdu format
@@ -325,7 +441,16 @@ class ElectronicControlUnit:
         after this time, the multi-pg will be sent. several pgs can thus be combined in one multi-pg.
         0 or no time-limit means immediate sending.
         """
-        return self.j1939_dll.send_pgn(data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit, frame_format)
+        return self.j1939_dll.send_pgn(
+            data_page,
+            pdu_format,
+            pdu_specific,
+            priority,
+            src_address,
+            data,
+            time_limit,
+            frame_format,
+        )
 
     def send_message(self, can_id, extended_id, data, fd_format=False):
         """Send a raw CAN message to the bus.
@@ -347,21 +472,34 @@ class ElectronicControlUnit:
 
         if not self._bus:
             raise RuntimeError("Not connected to CAN bus")
-        msg = can.Message(is_extended_id=extended_id,
-                          arbitration_id=can_id,
-                          data=data,
-                          is_fd=fd_format,
-                          bitrate_switch=fd_format
-                          )
+        msg = can.Message(
+            is_extended_id=extended_id,
+            arbitration_id=can_id,
+            data=data,
+            is_fd=fd_format,
+            bitrate_switch=fd_format,
+        )
         with self._send_lock:
-            self._bus.send(msg)
-        # TODO: check error receivement
+            try:
+                self._bus.send(msg)
+            except can.CanError as e:
+                logger.error(f'not able to send message because {e}')
 
     def notify(self, can_id, data, timestamp):
         """Feed incoming CAN message into this ecu.
 
         If a custom interface is used, this function must be called for each
         29-bit standard message read from the CAN bus.
+
+        The frame is enqueued onto the dispatch queue and processed by the
+        dedicated dispatch thread.  This returns quickly to the caller
+        (typically the python-can Notifier thread) without waiting for
+        subscriber callbacks to complete.
+
+        If the dispatch queue is full the frame is dropped rather than
+        blocking.  A warning is logged on the first drop and suppressed until
+        the queue drains, at which point a summary of the total drop count is
+        logged.
 
         :param int can_id:
             CAN-ID of the message (always 29-bit)
@@ -373,18 +511,74 @@ class ElectronicControlUnit:
             seconds.
             Where possible this will be timestamped in hardware.
         """
-        self.j1939_dll.notify(can_id, data, timestamp)
+        if self._job_thread_end.is_set():
+            # ECU is stopping or stopped; the dispatch thread has exited or is
+            # draining. Drop the frame rather than growing the queue
+            # with no consumer.
+            return
+        try:
+            self._dispatch_queue.put_nowait((can_id, data, timestamp))
+            if self._dispatch_queue_dropped:
+                # Queue has room again — emit the suppressed summary and reset.
+                logger.warning(
+                    "dispatch_queue drained: %d frame(s) were dropped while the queue was full",
+                    self._dispatch_queue_drop_count,
+                )
+                self._dispatch_queue_dropped = False
+                self._dispatch_queue_drop_count = 0
+        except queue.Full:
+            self._dispatch_queue_drop_count += 1
+            if not self._dispatch_queue_dropped:
+                logger.warning(
+                    "dispatch_queue full (maxsize=%d): dropping incoming frames until queue drains",
+                    self._dispatch_queue.maxsize,
+                )
+                self._dispatch_queue_dropped = True
 
     def add_bus_filters(self, filters: can.typechecking.CanFilters | None):
         """Add bus filters to the underlying CAN bus.
 
-         :param filters:
-            An iterable of dictionaries each containing a "can_id",
-            a "can_mask", and an optional "extended" key
+        :param filters:
+           An iterable of dictionaries each containing a "can_id",
+           a "can_mask", and an optional "extended" key
         """
         if self._bus is None:
             raise RuntimeError("Not connected to CAN bus")
         self._bus.set_filters(filters)
+
+    def _dispatch_job_thread(self):
+        """Dispatch thread: drains the incoming frame queue and calls the DLL.
+
+        Loops while the ECU is running, blocking on the dispatch queue with a
+        short timeout so it can observe ``_job_thread_end`` being set by
+        :meth:`stop`.  Uses the same ``while not self._job_thread_end.is_set()``
+        exit condition as the protocol and timer threads — no sentinel value
+        or second exit mechanism needed.
+
+        After the loop exits any frames that arrived concurrently with the stop
+        signal are drained so that in-flight TP reassembly is not truncated.
+        """
+        while not self._job_thread_end.is_set():
+            try:
+                can_id, data, timestamp = self._dispatch_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self.j1939_dll.notify(can_id, data, timestamp)
+            except Exception:
+                logger.exception("Exception in dispatch thread")
+
+        # Drain any frames that arrived between the last get() and stop() so
+        # that in-flight TP sessions are not truncated mid-reassembly.
+        while True:
+            try:
+                can_id, data, timestamp = self._dispatch_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self.j1939_dll.notify(can_id, data, timestamp)
+            except Exception:
+                logger.exception("Exception in dispatch thread (drain)")
 
     def _protocol_job_thread(self):
         """Protocol thread: handles TP/BAM timeout management only.
@@ -419,10 +613,10 @@ class ElectronicControlUnit:
                     deadline, seq, cb, cookie, delta = heapq.heappop(self._timer_events)
                     logger.debug("Deadline for timer event reached")
                     try:
-                        reschedule = (cb(cookie) is True)
+                        reschedule = cb(cookie) is True
                     except Exception:
-                        #TODO: is there a better way to handle exceptions in user callbacks?  
-                        # We don't want one bad callback to break the timer thread, 
+                        # TODO: is there a better way to handle exceptions in user callbacks?
+                        # We don't want one bad callback to break the timer thread,
                         # but we also don't want to just swallow it silently.
                         logger.exception("Timer callback failed: %r", cb)
                         reschedule = False
@@ -431,8 +625,10 @@ class ElectronicControlUnit:
                         new_deadline = deadline + delta
                         while new_deadline < now:
                             new_deadline += delta
-                        heapq.heappush(self._timer_events,
-                                       (new_deadline, self._timer_seq, cb, cookie, delta))
+                        heapq.heappush(
+                            self._timer_events,
+                            (new_deadline, self._timer_seq, cb, cookie, delta),
+                        )
                         self._timer_seq += 1
                     # returning False (or None) means remove — already popped, nothing to do
 
@@ -475,8 +671,13 @@ class ElectronicControlUnit:
         with self._subscribers_lock:
             snapshot = list(self._subscribers)
         for dic in snapshot:
-            if (dic['dev_adr'] is None) or (dest == ParameterGroupNumber.Address.GLOBAL) or (callable(dic['dev_adr']) and dic['dev_adr'](dest)) or (dest == dic['dev_adr']):
-                dic['cb'](priority, pgn, sa, timestamp, data)
+            if (
+                (dic["dev_adr"] is None)
+                or (dest == ParameterGroupNumber.Address.GLOBAL)
+                or (callable(dic["dev_adr"]) and dic["dev_adr"](dest))
+                or (dest == dic["dev_adr"])
+            ):
+                dic["cb"](priority, pgn, sa, timestamp, data)
 
     def _is_message_acceptable(self, dest):
         # Ownership / active-participation check only: does a subscriber own this
@@ -486,7 +687,8 @@ class ElectronicControlUnit:
         # and callable subscribers are handled separately by _notify_subscribers()
         # so a monitor never causes the stack to answer on the bus.
         with self._subscribers_lock:
-            return any(d['dev_adr'] == dest for d in self._subscribers)
+            return any(d["dev_adr"] == dest for d in self._subscribers)
+
 
 class MessageListener(Listener):
     """Listens for messages on CAN bus and feeds them to an ECU instance.
@@ -495,12 +697,17 @@ class MessageListener(Listener):
         The ECU to notify on new messages.
     """
 
-    def __init__(self, ecu : ElectronicControlUnit):
+    def __init__(self, ecu: ElectronicControlUnit):
         self.ecu = ecu
         self.stopped = False
 
-    def on_message_received(self, msg : can.Message):
-        if self.stopped or msg.is_error_frame or msg.is_remote_frame or (not msg.is_extended_id):
+    def on_message_received(self, msg: can.Message):
+        if (
+            self.stopped
+            or msg.is_error_frame
+            or msg.is_remote_frame
+            or (not msg.is_extended_id)
+        ):
             return
 
         try:
