@@ -1,3 +1,5 @@
+import time
+
 import can
 
 import j1939
@@ -247,6 +249,61 @@ def test_add_notfier(feeder):
     assert feeder.ecu._notifier == notifier
     feeder.ecu.remove_notifier()
     assert feeder.ecu._notifier is None
+
+
+def test_add_notifier_after_notifier_stop_still_delivers(feeder):
+    """A listener stopped via notifier.stop() must work when re-added later.
+
+    Regression test for a bug where ElectronicControlUnit.add_notifier()
+    re-added the ECU's own MessageListener (created once, in __init__, and
+    reused for the ECU's whole lifetime) to a new notifier without
+    resetting listener.stopped -- can.Notifier.stop() sets that flag
+    permanently on every listener it holds, so once *any* notifier this
+    ECU had been added to was stopped, every future notifier it was added
+    to (even a brand new one) silently dropped every frame forever,
+    despite the notifier itself being alive and the listener being
+    registered on it.
+    """
+    bus = can.interface.Bus(interface="virtual", channel="notifier-reset-test")
+    try:
+        feeder.ecu.add_bus(bus)
+
+        notifier1 = can.Notifier(bus=bus, listeners=[])
+        feeder.ecu.add_notifier(notifier1)
+        notifier1.stop()
+        feeder.ecu.remove_notifier()
+
+        notifier2 = can.Notifier(bus=bus, listeners=[])
+        feeder.ecu.add_notifier(notifier2)
+
+        received = []
+        feeder.ecu.subscribe(
+            lambda priority, pgn, sa, timestamp, data: received.append(data)
+        )
+
+        sender = can.interface.Bus(interface="virtual", channel="notifier-reset-test")
+        try:
+            msg = can.Message(
+                arbitration_id=0x18FEB201,
+                data=[1, 2, 3, 4, 5, 6, 7, 8],
+                is_extended_id=True,
+            )
+            sender.send(msg)
+
+            for _ in range(50):
+                if received:
+                    break
+                time.sleep(0.01)
+
+            assert received, (
+                "Frame was not delivered after re-adding to a new notifier -- "
+                "listener.stopped was not reset"
+            )
+        finally:
+            notifier2.stop()
+            sender.shutdown()
+    finally:
+        bus.shutdown()
 
 
 def test_add_bus_filters(feeder):
