@@ -77,8 +77,8 @@ class J1939_21:
         for ca in self._cas:
             if device_address == ca._device_address_preferred:
                 self._cas.remove(ca)
-                return True
-        return False
+                return ca
+        return None
 
     def _buffer_hash(self, src_address, dest_address):
         """Calcluates a hash value for the given address pair
@@ -564,4 +564,3 @@ class J1939_21:
             # stack having to own the destination address.
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
             return
-

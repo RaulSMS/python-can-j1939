@@ -113,8 +113,8 @@ class J1939_22:
         for ca in self._cas:
             if device_address == ca._device_address_preferred:
                 self._cas.remove(ca)
-                return True
-        return False
+                return ca
+        return None
 
     def _buffer_hash(self, session_num, src_address, dest_address):
         """Calculates a hash value for the given address pair
@@ -870,4 +870,3 @@ class J1939_22:
             self.__notify_subscribers(mid.priority, pgn.value, mid.source_address, ParameterGroupNumber.Address.GLOBAL, timestamp, data)
         else:
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
-
