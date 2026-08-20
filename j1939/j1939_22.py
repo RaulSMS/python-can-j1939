@@ -70,6 +70,7 @@ class J1939_22:
 
         # List of ControllerApplication
         self._cas = []
+        self._cas_lock = threading.RLock()
 
         self._LUT_FD_DLC = (
             list(range(9)) +
@@ -107,13 +108,19 @@ class J1939_22:
         self.__ecu_is_message_acceptable = ecu_is_message_acceptable
 
     def add_ca(self, ca):
-        self._cas.append(ca)
+        with self._cas_lock:
+            self._cas.append(ca)
+
+    def _cas_snapshot(self):
+        with self._cas_lock:
+            return list(self._cas)
 
     def remove_ca(self, device_address):
-        for ca in self._cas:
-            if device_address == ca._device_address_preferred:
-                self._cas.remove(ca)
-                return ca
+        with self._cas_lock:
+            for ca in self._cas:
+                if device_address == ca._device_address_preferred:
+                    self._cas.remove(ca)
+                    return ca
         return None
 
     def _buffer_hash(self, session_num, src_address, dest_address):
@@ -576,7 +583,7 @@ class J1939_22:
                         # route Commanded Address (J1939-81) to the registered CAs
                         # and consume it (do not forward to generic subscribers,
                         # consistent with ADDRESSCLAIM/REQUEST handling in notify())
-                        for ca in self._cas:
+                        for ca in self._cas_snapshot():
                             ca._process_commanded_address(src_address, self._rcv_buffer[buffer_hash]['data'], timestamp)
                     else:
                         self.__notify_subscribers(mid.priority, pgn, src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
@@ -717,7 +724,7 @@ class J1939_22:
                     # route Commanded Address (J1939-81) to the registered CAs and
                     # consume it (do not forward to generic subscribers, consistent
                     # with ADDRESSCLAIM/REQUEST handling in notify())
-                    for ca in self._cas:
+                    for ca in self._cas_snapshot():
                         ca._process_commanded_address(src_address, payload, timestamp)
                 else:
                     self.__notify_subscribers(mid.priority, cpgn, src_address, dest_address, timestamp, payload)
@@ -834,7 +841,7 @@ class J1939_22:
             if self.__ecu_is_message_acceptable(dest_address): # simple peer-to-peer reception without adding a controller-application
                 owns_dest = True
             else:
-                for ca in self._cas:
+                for ca in self._cas_snapshot():
                     if ca.message_acceptable(dest_address):
                         owns_dest = True
                         break
@@ -844,14 +851,14 @@ class J1939_22:
             # contained PGNs are delivered to subscribers regardless of ownership.
             self._process_multi_pg(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.ADDRESSCLAIM:
-            for ca in self._cas:
+            for ca in self._cas_snapshot():
                 ca._process_addressclaim(mid, data, timestamp)
             # Address claims are broadcast and observable by any node on the bus;
             # forward them to subscribers as well so passive monitors can see the
             # NAME/source-address of other nodes (consistent with j1939-21).
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
         elif pgn_value == ParameterGroupNumber.PGN.REQUEST:
-            for ca in self._cas:
+            for ca in self._cas_snapshot():
                 if ca.message_acceptable(dest_address):
                     ca._process_request(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.FD_TP_CM:

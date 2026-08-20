@@ -75,10 +75,12 @@ class ControllerApplication:
             The ECU this CA should be bound to.
             A j1939 :class:`j1939.ElectronicControlUnit` instance
         """
-        self._ecu = ecu
+        with self._lifecycle_lock:
+            self._ecu = ecu
 
     def remove_ecu(self):
-        self._ecu = None
+        with self._lifecycle_lock:
+            self._ecu = None
 
     def subscribe(self, callback):
         """Add the given callback to the message notification stream.
