@@ -99,6 +99,7 @@ class ElectronicControlUnit:
 
         self._subscribers = []
         self._subscribers_lock = threading.RLock()
+        self._ca_lock = threading.RLock()
 
         # Heap-based timer event list: (deadline, seq, callback, cookie, delta_time)
         self._timer_events = []
@@ -323,7 +324,7 @@ class ElectronicControlUnit:
             self._bus_created = False
         self._bus = None
 
-    def subscribe(self, callback, device_address=None):
+    def subscribe(self, callback, device_address=None, owner=None):
         """Add the given callback to the message notification stream.
 
         :param callback:
@@ -333,18 +334,45 @@ class ElectronicControlUnit:
             This is a simple way for peer-to-peer reception without adding a controller-application.
             Only one device address can be entered. Multiple device addresses are only possible with controller applications.
             Note: TP.CMDT will only be received if the destination address is bound to a controller application.
+
+        Subscriptions made directly on the ECU are independent of any
+        ControllerApplication and remain active until explicitly removed.
+
+        :param owner:
+            Optional lifecycle-managed owner, such as a
+            ControllerApplication. Owned subscriptions are removed when the
+            owner is removed from the ECU.
         """
         with self._subscribers_lock:
-            self._subscribers.append({"cb": callback, "dev_adr": device_address})
+            self._subscribers.append(
+                {"cb": callback, "dev_adr": device_address, "owner": owner}
+            )
 
-    def unsubscribe(self, callback):
+    def unsubscribe(self, callback, owner=None):
         """Stop listening for message.
 
         :param callback:
             Function to call when message is received.
+        :param owner:
+            Optional owner used to limit removal to that owner's
+            registration. If omitted, all registrations for the callback
+            are removed, preserving the original behavior.
         """
         with self._subscribers_lock:
-            self._subscribers = [d for d in self._subscribers if d["cb"] != callback]
+            self._subscribers = [
+                d
+                for d in self._subscribers
+                if d["cb"] != callback or (owner is not None and d["owner"] is not owner)
+            ]
+
+    def _unsubscribe_owner(self, owner):
+        """Remove all message subscriptions registered by an owner.
+        
+        :param owner: 
+            The owner whose message subscriptions should be removed.
+        """
+        with self._subscribers_lock:
+            self._subscribers = [d for d in self._subscribers if d["owner"] is not owner]
 
     def add_ca(self, **kwargs):
         """Add a ControllerApplication to the ECU.
@@ -374,8 +402,9 @@ class ElectronicControlUnit:
             da = kwargs.get("device_address", None)
             ca = ControllerApplication(name, da)
 
-        self.j1939_dll.add_ca(ca)
-        ca.associate_ecu(self)
+        with self._ca_lock:
+            self.j1939_dll.add_ca(ca)
+            ca.associate_ecu(self)
         return ca
 
     def remove_ca(self, device_address):
@@ -386,8 +415,20 @@ class ElectronicControlUnit:
 
         :return:
             True if the ControllerApplication was successfully removed, otherwise False is returned.
+
+        Any message subscriptions registered through the removed CA are also
+        removed. Callbacks that were registered directly through the ECU are
+        unaffected. When replacing a CA, subscribe its callbacks again through
+        the new CA.
         """
-        return self.j1939_dll.remove_ca(device_address)
+        with self._ca_lock:
+            ca = self.j1939_dll.remove_ca(device_address)
+            if ca is None:
+                return False
+            ca.stop()
+            self._unsubscribe_owner(ca)
+            ca.remove_ecu()
+            return True
 
     def add_bus(self, bus):
         """Add a bus to the ECU.

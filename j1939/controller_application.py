@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import j1939
 
@@ -60,6 +61,7 @@ class ControllerApplication:
         self._subscribers_request = []
         self._subscribers_acknowledge = []
         self._started = False
+        self._lifecycle_lock = threading.RLock()
 
     @property
     def _ecu_ref(self) -> j1939.ElectronicControlUnit:
@@ -73,21 +75,28 @@ class ControllerApplication:
             The ECU this CA should be bound to.
             A j1939 :class:`j1939.ElectronicControlUnit` instance
         """
-        self._ecu = ecu
+        with self._lifecycle_lock:
+            self._ecu = ecu
 
     def remove_ecu(self):
-
-        self._ecu = None
+        with self._lifecycle_lock:
+            self._ecu = None
 
     def subscribe(self, callback):
         """Add the given callback to the message notification stream.
+
+        The subscription belongs to this ControllerApplication. If the CA is
+        removed from its ECU, the subscription is removed with it. When a CA
+        is replaced, callbacks must be subscribed again through the new CA.
+
         :param callback:
             Function to call when message is received.
         """
-        self._ecu_ref.subscribe(callback, self.message_acceptable)
+        self._ecu_ref.subscribe(callback, self.message_acceptable, owner=self)
 
     def unsubscribe(self, callback):
         """Stop listening for message.
+
         :param callback:
             Function to call when message is received.
         """
@@ -159,45 +168,64 @@ class ControllerApplication:
         :param claim_delay:
             The time in seconds to wait before starting the address claim procedure.
         """
-        # TODO raise RuntimeError("Can't start CA. Seems to be already running.")? or just ignore?
-        # check if we are not already started and there is an ecu connected
-        if self._ecu and not self.started:
-            self._started = True
-            self._ecu_ref.add_timer(claim_delay, self._process_claim_async)
+        with self._lifecycle_lock:
+            # TODO raise RuntimeError("Can't start CA. Seems to be already running.")? or just ignore?
+            # check if we are not already started and there is an ecu connected
+            if self._ecu and not self.started:
+                self._started = True
+                ecu = self._ecu
+            else:
+                ecu = None
+        if ecu is not None:
+            ecu.add_timer(claim_delay, self._process_claim_async)
 
     def stop(self):
         """Stops the CA
         """
-        # check if we are already started and there is an ecu connected
-        if self._ecu and self.started:
-            self._started = False
-            self._ecu_ref.remove_timer(self._process_claim_async)
+        with self._lifecycle_lock:
+            # check if we are already started and there is an ecu connected
+            if self._ecu and self.started:
+                self._started = False
+                ecu = self._ecu
+            else:
+                ecu = None
+        if ecu is not None:
+            ecu.remove_timer(self._process_claim_async)
 
     def _process_claim_async(self, cookie):
-        time_to_sleep = 0.500
-        if self._device_address_state == ControllerApplication.State.NONE:
-            if self._device_address_preferred is not None:
-                self._device_address_announced = self._device_address_preferred
-                self._send_address_claimed(self._device_address_announced)
-                if self._device_address_announced > 127 and self._device_address_announced < 248:
-                    self._device_address_state = ControllerApplication.State.WAIT_VETO
-                    time_to_sleep = ControllerApplication.ClaimTimeout.VETO
-                else:
-                    # addresses from 0..127 and 248..253 should start immediately
-                    self._device_address = self._device_address_announced
-                    self._device_address_state = ControllerApplication.State.NORMAL
-        elif self._device_address_state == ControllerApplication.State.WAIT_VETO:
-            # if we reach this phase, there was no VETO to our address claimed message so far
-            self._device_address = self._device_address_announced
-            self._device_address_state = ControllerApplication.State.NORMAL
-        elif self._device_address_state == ControllerApplication.State.NORMAL:
-            # do nothing
-            pass
-        elif self._device_address_state == ControllerApplication.State.CANNOT_CLAIM:
-            # do nothing
-            pass
+        with self._lifecycle_lock:
+            if not self._ecu or not self.started:
+                return False
+
+            time_to_sleep = 0.500
+            if self._device_address_state == ControllerApplication.State.NONE:
+                if self._device_address_preferred is not None:
+                    self._device_address_announced = self._device_address_preferred
+                    self._send_address_claimed(self._device_address_announced)
+                    if self._device_address_announced > 127 and self._device_address_announced < 248:
+                        self._device_address_state = ControllerApplication.State.WAIT_VETO
+                        time_to_sleep = ControllerApplication.ClaimTimeout.VETO
+                    else:
+                        # addresses from 0..127 and 248..253 should start immediately
+                        self._device_address = self._device_address_announced
+                        self._device_address_state = ControllerApplication.State.NORMAL
+            elif self._device_address_state == ControllerApplication.State.WAIT_VETO:
+                # if we reach this phase, there was no VETO to our address claimed message so far
+                self._device_address = self._device_address_announced
+                self._device_address_state = ControllerApplication.State.NORMAL
+            elif self._device_address_state == ControllerApplication.State.NORMAL:
+                # do nothing
+                pass
+            elif self._device_address_state == ControllerApplication.State.CANNOT_CLAIM:
+                # do nothing
+                pass
+            # Capture the ECU while protected by the lifecycle lock, then
+            # schedule outside the lock to avoid lock inversion with the ECU
+            # timer thread.
+            ecu = self._ecu
+
         # add new event with (possibly) new timeout value
-        self._ecu_ref.add_timer(time_to_sleep, self._process_claim_async)
+        ecu.add_timer(time_to_sleep, self._process_claim_async)
         # returning false deletes the event from the list
         return False
 
