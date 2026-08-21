@@ -366,7 +366,11 @@ class ElectronicControlUnit:
             ]
 
     def _unsubscribe_owner(self, owner):
-        """Remove all message subscriptions registered by an owner."""
+        """Remove all message subscriptions registered by an owner.
+        
+        :param owner: 
+            The owner whose message subscriptions should be removed.
+        """
         with self._subscribers_lock:
             self._subscribers = [d for d in self._subscribers if d["owner"] is not owner]
 
