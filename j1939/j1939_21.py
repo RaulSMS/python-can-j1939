@@ -48,6 +48,7 @@ class J1939_21:
 
         # List of ControllerApplication
         self._cas = []
+        self._cas_lock = threading.RLock()
 
         # set minimum time between two tp-rts/cts messages
         self._minimum_tp_rts_cts_dt_interval = minimum_tp_rts_cts_dt_interval
@@ -71,14 +72,20 @@ class J1939_21:
         self.__ecu_is_message_acceptable = ecu_is_message_acceptable
 
     def add_ca(self, ca):
-        self._cas.append(ca)
+        with self._cas_lock:
+            self._cas.append(ca)
+
+    def _cas_snapshot(self):
+        with self._cas_lock:
+            return list(self._cas)
 
     def remove_ca(self, device_address):
-        for ca in self._cas:
-            if device_address == ca._device_address_preferred:
-                self._cas.remove(ca)
-                return True
-        return False
+        with self._cas_lock:
+            for ca in self._cas:
+                if device_address == ca._device_address_preferred:
+                    self._cas.remove(ca)
+                    return ca
+        return None
 
     def _buffer_hash(self, src_address, dest_address):
         """Calcluates a hash value for the given address pair
@@ -452,7 +459,7 @@ class J1939_21:
                     # route Commanded Address (J1939-81) to the registered CAs and
                     # consume it (do not forward to generic subscribers, consistent
                     # with ADDRESSCLAIM/REQUEST handling in notify())
-                    for ca in self._cas:
+                    for ca in self._cas_snapshot():
                         ca._process_commanded_address(src_address, self._rcv_buffer[buffer_hash]['data'], timestamp)
                 else:
                     self.__notify_subscribers(mid.priority, self._rcv_buffer[buffer_hash]['pgn'], src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
@@ -561,20 +568,20 @@ class J1939_21:
             if self.__ecu_is_message_acceptable(dest_address): # simple peer-to-peer reception without adding a controller-application
                 owns_dest = True
             else:
-                for ca in self._cas:
+                for ca in self._cas_snapshot():
                     if ca.message_acceptable(dest_address):
                         owns_dest = True
                         break
 
         if pgn_value == ParameterGroupNumber.PGN.ADDRESSCLAIM:
-            for ca in self._cas:
+            for ca in self._cas_snapshot():
                 ca._process_addressclaim(mid, data, timestamp)
             # Address claims are broadcast and observable by any node on the bus;
             # forward them to subscribers as well so passive monitors can see the
             # NAME/source-address of other nodes.
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
         elif pgn_value == ParameterGroupNumber.PGN.REQUEST:
-            for ca in self._cas:
+            for ca in self._cas_snapshot():
                 if ca.message_acceptable(dest_address):
                     ca._process_request(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.TP_CM:
