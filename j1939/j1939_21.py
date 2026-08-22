@@ -321,6 +321,7 @@ class J1939_21:
                         'pgn': pgn,
                         'message_size': message_size,
                         'num_packages': num_packages,
+                        'next_expected_packet': 1,
                         'next_packet': min(self._max_cmdt_packets, max_num_packages),
                         'max_cmdt_packages': self._max_cmdt_packets,
                         'num_packages_max_rec': min(self._max_cmdt_packets, max_num_packages),
@@ -386,6 +387,7 @@ class J1939_21:
                         "pgn": pgn,
                         "message_size": message_size,
                         "num_packages": num_packages,
+                        "next_expected_packet": 1,
                         "next_packet": 1,
                         "max_cmdt_packages": self._max_cmdt_packets,
                         "data": [],
@@ -417,8 +419,33 @@ class J1939_21:
                 # TODO: LOG/TRACE/EXCEPTION?
                 return
 
+            expected_sequence_number = self._rcv_buffer[buffer_hash]['next_expected_packet']
+            if sequence_number != expected_sequence_number:
+                sequence_error = (
+                    "duplicate"
+                    if 0 < sequence_number < expected_sequence_number
+                    else "invalid"
+                )
+                if dest_address != ParameterGroupNumber.Address.GLOBAL:
+                    # Keep the wire value in the standardized reason range. The
+                    # specific sequence error remains available in the exception.
+                    self.__send_tp_abort(
+                        dest_address,
+                        src_address,
+                        self.ConnectionAbortReason.RESOURCES,
+                        self._rcv_buffer[buffer_hash]['pgn'],
+                    )
+                del self._rcv_buffer[buffer_hash]
+                self.__job_thread_wakeup()
+                raise ValueError(
+                    "J1939-21 TP.DT packet out of sequence "
+                    f"({sequence_error}): "
+                    f"expected {expected_sequence_number}, received {sequence_number}"
+                )
+
             # get data
             self._rcv_buffer[buffer_hash]['data'].extend(data[1:])
+            self._rcv_buffer[buffer_hash]['next_expected_packet'] += 1
 
             # message is complete with sending an acknowledge
             if len(self._rcv_buffer[buffer_hash]['data']) >= self._rcv_buffer[buffer_hash]['message_size']:
