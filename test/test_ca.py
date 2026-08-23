@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 import j1939
 from test.helpers.feeder import Feeder
 
@@ -204,6 +206,99 @@ def test_bypass_address_claim_with_address_zero(feeder):
     ca = j1939.ControllerApplication(name=name, device_address_preferred=0x00, bypass_address_claim=True)
     assert ca.state == j1939.ControllerApplication.State.NORMAL
     assert ca.device_address == 0x00
+
+
+def test_change_address_preserves_subscription_and_updates_filter(feeder):
+    """Changing a CA address keeps its subscription attached to that CA."""
+    name = _commanded_address_name()
+    received = []
+
+    def callback(priority, pgn, sa, timestamp, data):
+        received.append(data)
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF64, list(name.bytes), 0.0),
+    ]
+    ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            name, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    ca.subscribe(callback)
+
+    assert ca.change_address(0x64)
+    assert ca.device_address == 0x64
+    assert ca.message_acceptable(0x64)
+    assert not ca.message_acceptable(0x80)
+    assert len(feeder.ecu._subscribers) == 1
+    assert feeder.ecu._subscribers[0]["owner"] is ca
+
+    feeder.ecu.notify(0x18DF6401, [1, 2, 3], 0.0)
+    time.sleep(0.05)
+    assert received == [[1, 2, 3]]
+
+
+def test_change_address_rejects_null_and_global_without_mutation(feeder):
+    """NULL and GLOBAL addresses are rejected without claiming."""
+    name = _commanded_address_name()
+    feeder.can_messages = []
+    ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            name, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+
+    assert not ca.change_address(0xFE)
+    assert not ca.change_address(0xFF)
+    assert ca.device_address == 0x80
+    assert feeder.can_messages == []
+
+
+def test_change_address_rearms_veto_for_started_ca(feeder):
+    """A started CA changing into the veto range waits for the veto timeout."""
+    name = _commanded_address_name()
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFFC8, list(name.bytes), 0.0),
+    ]
+    ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            name, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    ca.start()
+
+    assert ca.change_address(0xC8)
+    assert ca.state == j1939.ControllerApplication.State.WAIT_VETO
+    ca._process_claim_async(None)
+    assert ca.state == j1939.ControllerApplication.State.NORMAL
+    assert ca.device_address == 0xC8
+    ca.stop()
+
+
+@pytest.mark.parametrize("data_link_layer", ["j1939-21", "j1939-22"])
+def test_change_address_receive_path_supports_both_data_link_layers(data_link_layer):
+    """The updated address filter works through either receive implementation."""
+    sent = []
+    received = []
+    ecu = j1939.ElectronicControlUnit(
+        send_message=lambda can_id, *args, **kwargs: sent.append(can_id),
+        data_link_layer=data_link_layer,
+    )
+    name = _commanded_address_name()
+    try:
+        ca = ecu.add_ca(
+            controller_application=j1939.ControllerApplication(
+                name, device_address_preferred=0x80, bypass_address_claim=True
+            )
+        )
+        ca.subscribe(lambda *args: received.append(args[-1]))
+        assert ca.change_address(0x64)
+        ecu.notify(0x18DF6401, [4, 5, 6], 0.0)
+        time.sleep(0.05)
+        assert sent == [0x18EEFF64]
+        assert received == [[4, 5, 6]]
+    finally:
+        ecu.stop()
 
 
 def _commanded_address_name(arbitrary_address_capable=0):

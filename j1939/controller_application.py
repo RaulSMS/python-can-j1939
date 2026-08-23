@@ -322,6 +322,21 @@ class ControllerApplication:
         logger.info("Received Commanded Address: claiming new address '%d'", new_address)
         self._begin_address_claim(new_address)
 
+    def change_address(self, new_address):
+        """Change this CA's source address using the J1939 claim procedure.
+
+        The CA object and its subscriptions remain in place. Addresses in the
+        128..247 range enter the veto procedure when the CA is started; all
+        other valid addresses become active immediately.
+
+        :param int new_address:
+            A claimable source address in the range 0..253. NULL (254) and
+            GLOBAL (255) are rejected.
+        :return:
+            True if the address claim was started, otherwise False.
+        """
+        return self._begin_address_claim(new_address)
+
     def _begin_address_claim(self, new_address):
         """Initiate the J1939-81 address-claim procedure at the given address.
 
@@ -339,29 +354,37 @@ class ControllerApplication:
         :return:
             True if the claim procedure was started, otherwise False.
         """
-        # Only 0..253 are valid (claimable) source addresses. NULL (254) and
-        # GLOBAL (255) must never be claimed - doing so would put the CA into an
-        # invalid state.
-        if new_address < 0 or new_address > 253:
-            logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
-            return False
+        with self._lifecycle_lock:
+            # Only 0..253 are valid (claimable) source addresses. NULL (254)
+            # and GLOBAL (255) must never be claimed.
+            if new_address < 0 or new_address > 253:
+                logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
+                return False
 
-        self._device_address_preferred = new_address
-        self._device_address_announced = new_address
-        self._send_address_claimed(new_address)
-        if new_address > 127 and new_address < 248:
-            self._device_address_state = ControllerApplication.State.WAIT_VETO
-            # Re-arm the veto timeout so the WAIT_VETO -> NORMAL transition
-            # happens after the veto window rather than waiting for the next
-            # periodic claim tick. Only relevant when the periodic claim timer
-            # is already running (i.e. the CA has been started).
-            if self.started:
-                self._ecu_ref.remove_timer(self._process_claim_async)
-                self._ecu_ref.add_timer(ControllerApplication.ClaimTimeout.VETO, self._process_claim_async)
-        else:
-            # addresses from 0..127 and 248..253 claim immediately
-            self._device_address = new_address
-            self._device_address_state = ControllerApplication.State.NORMAL
+            self._device_address_preferred = new_address
+            self._device_address_announced = new_address
+            self._send_address_claimed(new_address)
+            if new_address > 127 and new_address < 248:
+                self._device_address_state = ControllerApplication.State.WAIT_VETO
+                ecu = self._ecu if self.started else None
+            else:
+                # addresses from 0..127 and 248..253 claim immediately
+                self._device_address = new_address
+                self._device_address_state = ControllerApplication.State.NORMAL
+                ecu = None
+
+        # Re-arm the veto timeout outside the lifecycle lock so this path
+        # cannot invert the CA and ECU timer locks.
+        if ecu is not None:
+            ecu.remove_timer(self._process_claim_async)
+            with self._lifecycle_lock:
+                should_rearm = (
+                    self._ecu is ecu
+                    and self.started
+                    and self._device_address_state == ControllerApplication.State.WAIT_VETO
+                )
+            if should_rearm:
+                ecu.add_timer(ControllerApplication.ClaimTimeout.VETO, self._process_claim_async)
         return True
 
     def _process_request(self, mid, dest_address, data, timestamp):
@@ -455,11 +478,12 @@ class ControllerApplication:
         """Indicates if this CA would accept a message
         This function indicates the acceptance of this CA for the given dest_address.
         """
-        if self.state != j1939.ControllerApplication.State.NORMAL:
-            return False
-        if dest_address == j1939.ParameterGroupNumber.Address.GLOBAL:
-            return True
-        return (self.device_address == dest_address)
+        with self._lifecycle_lock:
+            if self._device_address_state != j1939.ControllerApplication.State.NORMAL:
+                return False
+            if dest_address == j1939.ParameterGroupNumber.Address.GLOBAL:
+                return True
+            return self._device_address == dest_address
 
     @property
     def state(self):
