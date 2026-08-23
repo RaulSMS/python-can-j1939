@@ -333,7 +333,8 @@ class ControllerApplication:
             A claimable source address in the range 0..253. NULL (254) and
             GLOBAL (255) are rejected.
         :return:
-            True if the address claim was started, otherwise False.
+            True if the address claim was started, otherwise False. Returns
+            False when the CA is not associated with an ECU.
         """
         return self._begin_address_claim(new_address)
 
@@ -360,15 +361,19 @@ class ControllerApplication:
             if new_address < 0 or new_address > 253:
                 logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
                 return False
+            if self._ecu is None:
+                logger.warning("Ignoring address claim because the CA is not associated with an ECU")
+                return False
 
+            self._send_address_claimed(new_address)
             self._device_address_preferred = new_address
             self._device_address_announced = new_address
-            self._send_address_claimed(new_address)
-            if new_address > 127 and new_address < 248:
+            if new_address > 127 and new_address < 248 and self.started:
                 self._device_address_state = ControllerApplication.State.WAIT_VETO
-                ecu = self._ecu if self.started else None
+                ecu = self._ecu
             else:
-                # addresses from 0..127 and 248..253 claim immediately
+                # Unstarted CAs and addresses from 0..127 and 248..253 claim
+                # immediately.
                 self._device_address = new_address
                 self._device_address_state = ControllerApplication.State.NORMAL
                 ecu = None

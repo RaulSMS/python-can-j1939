@@ -275,6 +275,36 @@ def test_change_address_rearms_veto_for_started_ca(feeder):
     ca.stop()
 
 
+def test_change_address_claims_veto_range_immediately_when_unstarted(feeder):
+    """An unstarted CA does not enter WAIT_VETO without a running timer."""
+    name = _commanded_address_name()
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFFC8, list(name.bytes), 0.0),
+    ]
+    ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            name, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+
+    assert ca.change_address(0xC8)
+    assert ca.state == j1939.ControllerApplication.State.NORMAL
+    assert ca.device_address == 0xC8
+
+
+def test_change_address_unassociated_ca_is_noop():
+    """An unassociated CA rejects address changes without mutating state."""
+    name = _commanded_address_name()
+    ca = j1939.ControllerApplication(
+        name, device_address_preferred=0x80, bypass_address_claim=True
+    )
+
+    assert not ca.change_address(0x64)
+    assert ca.device_address == 0x80
+    assert ca._device_address_preferred == 0x80
+    assert ca._device_address_announced == 0x80
+
+
 @pytest.mark.parametrize("data_link_layer", ["j1939-21", "j1939-22"])
 def test_change_address_receive_path_supports_both_data_link_layers(data_link_layer):
     """The updated address filter works through either receive implementation."""
