@@ -181,7 +181,7 @@ class J1939_21:
                                           'pgn': pgn,
                                           'data': data,
                                           'dest_address': dest_address}
-                    return False
+                    return True
             self._put_multi_msg(data, dest_address, src_address, priority, pgn, buffer_hash, pdu_specific)
             self.__job_thread_wakeup()
 
@@ -194,8 +194,8 @@ class J1939_21:
 
 
         # get from que if buffer is empty
-        if not bool(self._snd_buffer):
-            key = next(iter(self._snd_que.items()))
+        if not self._snd_buffer and self._snd_que:
+            key = next(iter(self._snd_que))
             self._put_multi_msg(**self._snd_que.pop(key))
         
         with self._buffer_lock:
