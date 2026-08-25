@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import j1939
 
@@ -60,6 +61,7 @@ class ControllerApplication:
         self._subscribers_request = []
         self._subscribers_acknowledge = []
         self._started = False
+        self._lifecycle_lock = threading.RLock()
 
     @property
     def _ecu_ref(self) -> j1939.ElectronicControlUnit:
@@ -73,21 +75,28 @@ class ControllerApplication:
             The ECU this CA should be bound to.
             A j1939 :class:`j1939.ElectronicControlUnit` instance
         """
-        self._ecu = ecu
+        with self._lifecycle_lock:
+            self._ecu = ecu
 
     def remove_ecu(self):
-
-        self._ecu = None
+        with self._lifecycle_lock:
+            self._ecu = None
 
     def subscribe(self, callback):
         """Add the given callback to the message notification stream.
+
+        The subscription belongs to this ControllerApplication. If the CA is
+        removed from its ECU, the subscription is removed with it. When a CA
+        is replaced, callbacks must be subscribed again through the new CA.
+
         :param callback:
             Function to call when message is received.
         """
-        self._ecu_ref.subscribe(callback, self.message_acceptable)
+        self._ecu_ref.subscribe(callback, self.message_acceptable, owner=self)
 
     def unsubscribe(self, callback):
         """Stop listening for message.
+
         :param callback:
             Function to call when message is received.
         """
@@ -159,45 +168,64 @@ class ControllerApplication:
         :param claim_delay:
             The time in seconds to wait before starting the address claim procedure.
         """
-        # TODO raise RuntimeError("Can't start CA. Seems to be already running.")? or just ignore?
-        # check if we are not already started and there is an ecu connected
-        if self._ecu and not self.started:
-            self._started = True
-            self._ecu_ref.add_timer(claim_delay, self._process_claim_async)
+        with self._lifecycle_lock:
+            # TODO raise RuntimeError("Can't start CA. Seems to be already running.")? or just ignore?
+            # check if we are not already started and there is an ecu connected
+            if self._ecu and not self.started:
+                self._started = True
+                ecu = self._ecu
+            else:
+                ecu = None
+        if ecu is not None:
+            ecu.add_timer(claim_delay, self._process_claim_async)
 
     def stop(self):
         """Stops the CA
         """
-        # check if we are already started and there is an ecu connected
-        if self._ecu and self.started:
-            self._started = False
-            self._ecu_ref.remove_timer(self._process_claim_async)
+        with self._lifecycle_lock:
+            # check if we are already started and there is an ecu connected
+            if self._ecu and self.started:
+                self._started = False
+                ecu = self._ecu
+            else:
+                ecu = None
+        if ecu is not None:
+            ecu.remove_timer(self._process_claim_async)
 
     def _process_claim_async(self, cookie):
-        time_to_sleep = 0.500
-        if self._device_address_state == ControllerApplication.State.NONE:
-            if self._device_address_preferred is not None:
-                self._device_address_announced = self._device_address_preferred
-                self._send_address_claimed(self._device_address_announced)
-                if self._device_address_announced > 127 and self._device_address_announced < 248:
-                    self._device_address_state = ControllerApplication.State.WAIT_VETO
-                    time_to_sleep = ControllerApplication.ClaimTimeout.VETO
-                else:
-                    # addresses from 0..127 and 248..253 should start immediately
-                    self._device_address = self._device_address_announced
-                    self._device_address_state = ControllerApplication.State.NORMAL
-        elif self._device_address_state == ControllerApplication.State.WAIT_VETO:
-            # if we reach this phase, there was no VETO to our address claimed message so far
-            self._device_address = self._device_address_announced
-            self._device_address_state = ControllerApplication.State.NORMAL
-        elif self._device_address_state == ControllerApplication.State.NORMAL:
-            # do nothing
-            pass
-        elif self._device_address_state == ControllerApplication.State.CANNOT_CLAIM:
-            # do nothing
-            pass
+        with self._lifecycle_lock:
+            if not self._ecu or not self.started:
+                return False
+
+            time_to_sleep = 0.500
+            if self._device_address_state == ControllerApplication.State.NONE:
+                if self._device_address_preferred is not None:
+                    self._device_address_announced = self._device_address_preferred
+                    self._send_address_claimed(self._device_address_announced)
+                    if self._device_address_announced > 127 and self._device_address_announced < 248:
+                        self._device_address_state = ControllerApplication.State.WAIT_VETO
+                        time_to_sleep = ControllerApplication.ClaimTimeout.VETO
+                    else:
+                        # addresses from 0..127 and 248..253 should start immediately
+                        self._device_address = self._device_address_announced
+                        self._device_address_state = ControllerApplication.State.NORMAL
+            elif self._device_address_state == ControllerApplication.State.WAIT_VETO:
+                # if we reach this phase, there was no VETO to our address claimed message so far
+                self._device_address = self._device_address_announced
+                self._device_address_state = ControllerApplication.State.NORMAL
+            elif self._device_address_state == ControllerApplication.State.NORMAL:
+                # do nothing
+                pass
+            elif self._device_address_state == ControllerApplication.State.CANNOT_CLAIM:
+                # do nothing
+                pass
+            # Capture the ECU while protected by the lifecycle lock, then
+            # schedule outside the lock to avoid lock inversion with the ECU
+            # timer thread.
+            ecu = self._ecu
+
         # add new event with (possibly) new timeout value
-        self._ecu_ref.add_timer(time_to_sleep, self._process_claim_async)
+        ecu.add_timer(time_to_sleep, self._process_claim_async)
         # returning false deletes the event from the list
         return False
 
@@ -294,6 +322,22 @@ class ControllerApplication:
         logger.info("Received Commanded Address: claiming new address '%d'", new_address)
         self._begin_address_claim(new_address)
 
+    def change_address(self, new_address):
+        """Change this CA's source address using the J1939 claim procedure.
+
+        The CA object and its subscriptions remain in place. Addresses in the
+        128..247 range enter the veto procedure when the CA is started; all
+        other valid addresses become active immediately.
+
+        :param int new_address:
+            A claimable source address in the range 0..253. NULL (254) and
+            GLOBAL (255) are rejected.
+        :return:
+            True if the address claim was started, otherwise False. Returns
+            False when the CA is not associated with an ECU.
+        """
+        return self._begin_address_claim(new_address)
+
     def _begin_address_claim(self, new_address):
         """Initiate the J1939-81 address-claim procedure at the given address.
 
@@ -311,29 +355,41 @@ class ControllerApplication:
         :return:
             True if the claim procedure was started, otherwise False.
         """
-        # Only 0..253 are valid (claimable) source addresses. NULL (254) and
-        # GLOBAL (255) must never be claimed - doing so would put the CA into an
-        # invalid state.
-        if new_address < 0 or new_address > 253:
-            logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
-            return False
+        with self._lifecycle_lock:
+            # Only 0..253 are valid (claimable) source addresses. NULL (254)
+            # and GLOBAL (255) must never be claimed.
+            if new_address < 0 or new_address > 253:
+                logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
+                return False
+            if self._ecu is None:
+                logger.warning("Ignoring address claim because the CA is not associated with an ECU")
+                return False
 
-        self._device_address_preferred = new_address
-        self._device_address_announced = new_address
-        self._send_address_claimed(new_address)
-        if new_address > 127 and new_address < 248:
-            self._device_address_state = ControllerApplication.State.WAIT_VETO
-            # Re-arm the veto timeout so the WAIT_VETO -> NORMAL transition
-            # happens after the veto window rather than waiting for the next
-            # periodic claim tick. Only relevant when the periodic claim timer
-            # is already running (i.e. the CA has been started).
-            if self.started:
-                self._ecu_ref.remove_timer(self._process_claim_async)
-                self._ecu_ref.add_timer(ControllerApplication.ClaimTimeout.VETO, self._process_claim_async)
-        else:
-            # addresses from 0..127 and 248..253 claim immediately
-            self._device_address = new_address
-            self._device_address_state = ControllerApplication.State.NORMAL
+            self._send_address_claimed(new_address)
+            self._device_address_preferred = new_address
+            self._device_address_announced = new_address
+            if new_address > 127 and new_address < 248 and self.started:
+                self._device_address_state = ControllerApplication.State.WAIT_VETO
+                ecu = self._ecu
+            else:
+                # Unstarted CAs and addresses from 0..127 and 248..253 claim
+                # immediately.
+                self._device_address = new_address
+                self._device_address_state = ControllerApplication.State.NORMAL
+                ecu = None
+
+        # Re-arm the veto timeout outside the lifecycle lock so this path
+        # cannot invert the CA and ECU timer locks.
+        if ecu is not None:
+            ecu.remove_timer(self._process_claim_async)
+            with self._lifecycle_lock:
+                should_rearm = (
+                    self._ecu is ecu
+                    and self.started
+                    and self._device_address_state == ControllerApplication.State.WAIT_VETO
+                )
+            if should_rearm:
+                ecu.add_timer(ControllerApplication.ClaimTimeout.VETO, self._process_claim_async)
         return True
 
     def _process_request(self, mid, dest_address, data, timestamp):
@@ -427,11 +483,12 @@ class ControllerApplication:
         """Indicates if this CA would accept a message
         This function indicates the acceptance of this CA for the given dest_address.
         """
-        if self.state != j1939.ControllerApplication.State.NORMAL:
-            return False
-        if dest_address == j1939.ParameterGroupNumber.Address.GLOBAL:
-            return True
-        return (self.device_address == dest_address)
+        with self._lifecycle_lock:
+            if self._device_address_state != j1939.ControllerApplication.State.NORMAL:
+                return False
+            if dest_address == j1939.ParameterGroupNumber.Address.GLOBAL:
+                return True
+            return self._device_address == dest_address
 
     @property
     def state(self):

@@ -1,8 +1,11 @@
 import time
 
 import can
+import pytest
 
 import j1939
+from j1939.j1939_21 import J1939_21
+from j1939.message_id import MessageId
 from test.helpers.feeder import Feeder
 
 # def test_connect(self):
@@ -56,6 +59,98 @@ def test_broadcast_receive_long(feeder):
     ]
 
     feeder.receive()
+
+
+def test_broadcast_receive_out_of_sequence_packet_raises():
+    """Reject and terminate a BAM session with an invalid sequence number."""
+    sent = []
+    notified = []
+    dll = J1939_21(
+        send_message=lambda *args: sent.append(args),
+        job_thread_wakeup=lambda: None,
+        notify_subscribers=lambda *args: notified.append(args),
+        max_cmdt_packets=1,
+        minimum_tp_rts_cts_dt_interval=None,
+        minimum_tp_bam_dt_interval=None,
+        ecu_is_message_acceptable=lambda dest: True,
+    )
+    bam_mid = MessageId(can_id=0x00ECFF01)
+    dll._process_tp_cm(bam_mid, 0xFF, [32, 20, 0, 3, 255, 0xB0, 0xFE, 0], 0.0)
+    buffer_hash = dll._buffer_hash(0x01, 0xFF)
+    mid = MessageId(can_id=0x00EBFF01)
+
+    with pytest.raises(ValueError, match='out of sequence'):
+        dll._process_tp_dt(mid, 0xFF, [2, 8, 9, 10, 11, 12, 13, 14], 0.0)
+
+    assert sent == []
+    assert notified == []
+    assert buffer_hash not in dll._rcv_buffer
+
+
+def test_peer_to_peer_receive_out_of_sequence_packet_aborts():
+    """Reject an out-of-sequence CMDT packet and abort the session."""
+    sent = []
+    dll = J1939_21(
+        send_message=lambda *args: sent.append(args),
+        job_thread_wakeup=lambda: None,
+        notify_subscribers=lambda *args: None,
+        max_cmdt_packets=1,
+        minimum_tp_rts_cts_dt_interval=None,
+        minimum_tp_bam_dt_interval=None,
+        ecu_is_message_acceptable=lambda dest: True,
+    )
+    rts_mid = MessageId(can_id=0x00EC0201)
+    dll._process_tp_cm(rts_mid, 0x02, [16, 20, 0, 3, 1, 0, 223, 0], 0.0)
+    sent.clear()
+
+    dt_mid = MessageId(can_id=0x00EB0201)
+    with pytest.raises(ValueError, match='out of sequence'):
+        dll._process_tp_dt(dt_mid, 0x02, [2, 1, 2, 3, 4, 5, 6, 7], 0.0)
+
+    assert sent == [
+        (
+            0x1CEC0102,
+            True,
+            [255, 2, 255, 255, 255, 0, 223, 0],
+        )
+    ]
+    assert not dll._rcv_buffer
+
+    dll._process_tp_cm(rts_mid, 0x02, [16, 20, 0, 3, 1, 0, 223, 0], 0.0)
+    sent.clear()
+
+    with pytest.raises(ValueError, match='out of sequence'):
+        dll._process_tp_dt(dt_mid, 0x02, [0, 1, 2, 3, 4, 5, 6, 7], 0.0)
+
+    assert sent[0][2][1] == 2
+
+
+def test_peer_to_peer_sequence_gap_after_valid_packet_aborts():
+    """Reject a sequence gap without delivering a partial RTS/CTS payload."""
+    sent = []
+    notified = []
+    dll = J1939_21(
+        send_message=lambda *args: sent.append(args),
+        job_thread_wakeup=lambda: None,
+        notify_subscribers=lambda *args: notified.append(args),
+        max_cmdt_packets=2,
+        minimum_tp_rts_cts_dt_interval=None,
+        minimum_tp_bam_dt_interval=None,
+        ecu_is_message_acceptable=lambda dest: True,
+    )
+    rts_mid = MessageId(can_id=0x00EC0201)
+    dll._process_tp_cm(rts_mid, 0x02, [16, 20, 0, 3, 2, 0, 223, 0], 0.0)
+    sent.clear()
+
+    dt_mid = MessageId(can_id=0x00EB0201)
+    dll._process_tp_dt(dt_mid, 0x02, [1, 1, 2, 3, 4, 5, 6, 7], 0.0)
+
+    with pytest.raises(ValueError, match='out of sequence'):
+        dll._process_tp_dt(dt_mid, 0x02, [3, 8, 9, 10, 11, 12, 13, 14], 0.0)
+
+    assert sent[0][2][1] == 2
+    assert notified == []
+    assert not dll._rcv_buffer
 
 
 def test_peer_to_peer_receive_short(feeder):
@@ -341,6 +436,139 @@ def test_subscribe(feeder):
     feeder.receive()
 
     assert call_count == 1
+
+
+def test_remove_ca_cleans_ca_subscriptions_but_preserves_ecu_subscriptions(feeder):
+    """Removing a CA removes only subscriptions registered through that CA."""
+    received = []
+
+    def callback(priority, pgn, sa, timestamp, data):
+        received.append(data)
+
+    ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    ca.subscribe(callback)
+    feeder.ecu.subscribe(callback)
+
+    assert len(feeder.ecu._subscribers) == 2
+    assert feeder.ecu.remove_ca(0x80)
+    assert len(feeder.ecu._subscribers) == 1
+    assert feeder.ecu._subscribers[0]["owner"] is None
+
+    feeder.ecu._notify_subscribers(6, 0xF000, 1, 0x80, 0.0, bytearray([1]))
+    assert received == [bytearray([1])]
+
+
+def test_replacement_ca_must_be_resubscribed(feeder):
+    """A replacement CA receives callbacks only after explicit re-subscription."""
+    received = []
+
+    def callback(priority, pgn, sa, timestamp, data):
+        received.append(data)
+
+    first_ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    first_ca.subscribe(callback)
+    assert feeder.ecu.remove_ca(0x80)
+
+    replacement_ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x81, bypass_address_claim=True
+        )
+    )
+    feeder.ecu._notify_subscribers(6, 0xF000, 1, 0x81, 0.0, bytearray([1]))
+    assert received == []
+
+    replacement_ca.subscribe(callback)
+    feeder.ecu._notify_subscribers(6, 0xF000, 1, 0x81, 0.0, bytearray([2]))
+    assert received == [bytearray([2])]
+
+
+def test_ca_unsubscribe_preserves_legacy_callback_behavior(feeder):
+    """CA unsubscribe removes all registrations for the callback as before."""
+    received = []
+
+    def callback(priority, pgn, sa, timestamp, data):
+        received.append(data)
+
+    first_ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    second_ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x81, bypass_address_claim=True
+        )
+    )
+    first_ca.subscribe(callback)
+    second_ca.subscribe(callback)
+    first_ca.unsubscribe(callback)
+
+    feeder.ecu._notify_subscribers(6, 0xF000, 1, 0x81, 0.0, bytearray([1]))
+    assert received == []
+
+
+def test_remove_started_ca_stops_timer_before_detaching(feeder):
+    """Removing a started CA stops its timer before detaching its ECU."""
+    ca = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    ca.start()
+    assert ca.started
+
+    assert feeder.ecu.remove_ca(0x80)
+    assert not ca.started
+    assert ca._ecu is None
+    with feeder.ecu._timer_events_lock:
+        assert all(event[2] != ca._process_claim_async for event in feeder.ecu._timer_events)
+
+    replacement = feeder.ecu.add_ca(
+        controller_application=j1939.ControllerApplication(
+            None, device_address_preferred=0x80, bypass_address_claim=True
+        )
+    )
+    replacement.start()
+    assert replacement.started
+
+
+@pytest.mark.parametrize("data_link_layer", ["j1939-21", "j1939-22"])
+def test_remove_ca_cleans_subscription_through_receive_path(data_link_layer):
+    """CA subscriptions are cleaned for both data-link receive paths."""
+    ecu = j1939.ElectronicControlUnit(
+        send_message=lambda *args, **kwargs: None,
+        data_link_layer=data_link_layer,
+    )
+    received = []
+
+    def callback(priority, pgn, sa, timestamp, data):
+        received.append(data)
+
+    try:
+        ca = ecu.add_ca(
+            controller_application=j1939.ControllerApplication(
+                None, device_address_preferred=0x81, bypass_address_claim=True
+            )
+        )
+        ca.subscribe(callback)
+        ecu.notify(0x18DF8101, [1, 2, 3], 0.0)
+        time.sleep(0.05)
+        assert len(received) == 1
+
+        assert ecu.remove_ca(0x81)
+        ecu.notify(0x18DF8101, [4, 5, 6], 0.0)
+        time.sleep(0.05)
+        assert len(received) == 1
+    finally:
+        ecu.stop()
 
 
 def test_constructor_accepts_bus_instance():
