@@ -520,7 +520,8 @@ def test_send_pgn_concurrent_no_crash():
 def test_send_pgn_j1939_21_buffer_lock_no_race():
     """send_pgn check-then-write on _snd_buffer must be atomic: two threads
     sending to the same src/dst pair must not both succeed and overwrite each
-    other's buffer entry."""
+    other's buffer entry.
+    with the new send que one of the threads will putthe package to the que and the message will be send later"""
     results = []
     errors = []
 
@@ -550,10 +551,11 @@ def test_send_pgn_j1939_21_buffer_lock_no_race():
     ecu.stop()
 
     assert not errors, f"Exceptions: {errors}"
-    # Exactly one should succeed (True) and one should be rejected (False)
-    # because both target the same src/dst hash.
-    assert sorted(results) == [False, True], (
-        f"Expected one success and one rejection, got: {results}"
+    # both should succeed (True)
+    # because both target the same src/dst hash and one of the 
+    # messages will be set to the que and send later.
+    assert sorted(results) == [True, True], (
+        f"Expected two times success, got: {results}"
     )
 
 
