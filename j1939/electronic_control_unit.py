@@ -643,7 +643,11 @@ class ElectronicControlUnit:
             try:
                 next_wakeup = self.j1939_dll.async_job_thread(now)
             except Exception:
-                logger.exception("Exception in protocol job thread")
+                logger.exception(
+                    "%s.async_job_thread() raised; TP/BAM timeout handling "
+                    "will retry in 1s instead of stopping",
+                    type(self.j1939_dll).__name__,
+                )
                 next_wakeup = now + 1.0
             time_to_sleep = next_wakeup - time.monotonic()
             if time_to_sleep > 0:
