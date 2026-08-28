@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import heapq
+import inspect
 import logging
 import queue
 import threading
@@ -13,6 +14,7 @@ from can import Listener
 from .controller_application import ControllerApplication
 from .j1939_21 import J1939_21
 from .j1939_22 import J1939_22
+from .message import J1939Message
 from .message_id import FrameFormat
 from .parameter_group_number import ParameterGroupNumber
 
@@ -324,11 +326,44 @@ class ElectronicControlUnit:
             self._bus_created = False
         self._bus = None
 
+    @staticmethod
+    def _callback_takes_message(callback):
+        """Detect whether ``callback`` expects the new single-argument
+        ``J1939Message`` calling convention rather than the legacy
+        ``(priority, pgn, sa, timestamp, data)`` positional arguments.
+
+        A callback is treated as new-style if it accepts exactly one
+        positional parameter (besides ``self`` for bound methods), or if its
+        signature cannot be inspected (e.g. some C-implemented callables) —
+        in which case it falls back to the legacy calling convention.
+        """
+        try:
+            sig = inspect.signature(callback)
+        except (TypeError, ValueError):
+            return False
+        positional = [
+            p
+            for p in sig.parameters.values()
+            if p.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        has_var_positional = any(
+            p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()
+        )
+        if has_var_positional:
+            return False
+        return len(positional) == 1
+
     def subscribe(self, callback, device_address=None, owner=None):
         """Add the given callback to the message notification stream.
 
         :param callback:
-            Function to call when message is received.
+            Function to call when message is received. Either the legacy
+            5-argument form ``callback(priority, pgn, sa, timestamp, data)``
+            or the new single-argument form ``callback(msg: J1939Message)``,
+            which also carries the destination address. The calling
+            convention is detected once from the callback's signature at
+            subscribe time.
         :param int device_address:
             Device address of the application.
             This is a simple way for peer-to-peer reception without adding a controller-application.
@@ -345,7 +380,12 @@ class ElectronicControlUnit:
         """
         with self._subscribers_lock:
             self._subscribers.append(
-                {"cb": callback, "dev_adr": device_address, "owner": owner}
+                {
+                    "cb": callback,
+                    "dev_adr": device_address,
+                    "owner": owner,
+                    "takes_message": self._callback_takes_message(callback),
+                }
             )
 
     def unsubscribe(self, callback, owner=None):
@@ -728,7 +768,10 @@ class ElectronicControlUnit:
                 or (callable(dic["dev_adr"]) and dic["dev_adr"](dest))
                 or (dest == dic["dev_adr"])
             ):
-                dic["cb"](priority, pgn, sa, timestamp, data)
+                if dic["takes_message"]:
+                    dic["cb"](J1939Message(priority, pgn, sa, timestamp, data, dest))
+                else:
+                    dic["cb"](priority, pgn, sa, timestamp, data)
 
     def _is_message_acceptable(self, dest):
         # Ownership / active-participation check only: does a subscriber own this
