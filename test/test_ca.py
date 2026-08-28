@@ -254,6 +254,56 @@ def test_change_address_rejects_null_and_global_without_mutation(feeder):
     assert feeder.can_messages == []
 
 
+def _address_test_name():
+    return j1939.Name(
+        arbitrary_address_capable=0,
+        industry_group=j1939.Name.IndustryGroup.Global,
+        vehicle_system_instance=0,
+        vehicle_system=0,
+        function=0,
+        function_instance=0,
+        ecu_instance=0,
+        manufacturer_code=0,
+        identity_number=0,
+    )
+
+
+def test_constructor_accepts_min_valid_address():
+    """Address 0 is the lowest claimable source address."""
+    ca = j1939.ControllerApplication(name=_address_test_name(), device_address_preferred=0)
+    assert ca._device_address_preferred == 0
+
+
+def test_constructor_accepts_max_valid_address():
+    """Address 253 is the highest claimable source address."""
+    ca = j1939.ControllerApplication(name=_address_test_name(), device_address_preferred=253)
+    assert ca._device_address_preferred == 253
+
+
+def test_constructor_accepts_none_address():
+    """device_address_preferred=None (no preferred address yet) is allowed."""
+    ca = j1939.ControllerApplication(name=_address_test_name(), device_address_preferred=None)
+    assert ca._device_address_preferred is None
+
+
+def test_constructor_rejects_null_address():
+    """NULL (254) is not a claimable source address and must raise."""
+    with pytest.raises(ValueError):
+        j1939.ControllerApplication(name=_address_test_name(), device_address_preferred=254)
+
+
+def test_constructor_rejects_global_address():
+    """GLOBAL (255) is not a claimable source address and must raise."""
+    with pytest.raises(ValueError):
+        j1939.ControllerApplication(name=_address_test_name(), device_address_preferred=255)
+
+
+def test_constructor_rejects_negative_address():
+    """Negative addresses are below the valid range and must raise."""
+    with pytest.raises(ValueError):
+        j1939.ControllerApplication(name=_address_test_name(), device_address_preferred=-1)
+
+
 def test_change_address_rearms_veto_for_started_ca(feeder):
     """A started CA changing into the veto range waits for the veto timeout."""
     name = _commanded_address_name()
