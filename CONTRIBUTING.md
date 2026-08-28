@@ -82,9 +82,9 @@ If you are a contributor and believe a new version should be published (e.g., af
 ### Maintainer Deployment Sequence (For Reference)
 Only RaulSMS has permission to publish releases to PyPI. The steps are:
 1. Update the version string inside j1939/version.py on the master branch.
-2. Push a semantic version tag matching the v* pattern:
-   git tag v2.1.0
-   git push origin v2.1.0
+2. Push a semantic version tag (no `v` prefix), matching the pattern `[0-9]+.[0-9]+.[0-9]+` (optionally with a `-` suffix, e.g. `2.1.0-rc1`):
+   git tag 2.1.0
+   git push origin 2.1.0
 3. The CI/CD system will automatically catch the tag push, execute all tests, generate a GitHub Release with an automated changelog, and securely upload the package distributions to PyPI.
 
 ## Architecture overview
