@@ -761,6 +761,16 @@ def test_dispatch_queue_drop_on_full():
         )
     finally:
         callback_release.set()  # ensure unblocked even if test fails early
+        ecu.stop()
+        # ecu.stop() only warns (rather than failing) if the dispatch thread
+        # doesn't exit within its own dispatch_join_timeout, so explicitly wait
+        # here for all three threads to actually exit before returning. This
+        # avoids racing the (much shorter) thread-leak fixture in conftest.py
+        # against stop()'s own generous join timeout — see #81.
+        for t in (ecu._dispatch_thread, ecu._protocol_thread, ecu._timer_thread):
+            assert _wait_thread_exit(t, timeout=3.0), (
+                f"{t.name} did not exit within 3s of ecu.stop()"
+            )
 
 
 def test_protocol_job_thread_survives_dll_exception():
