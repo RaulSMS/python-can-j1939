@@ -640,7 +640,11 @@ class ElectronicControlUnit:
         """
         while not self._job_thread_end.is_set():
             now = time.monotonic()
-            next_wakeup = self.j1939_dll.async_job_thread(now)
+            try:
+                next_wakeup = self.j1939_dll.async_job_thread(now)
+            except Exception:
+                logger.exception("Exception in protocol job thread")
+                next_wakeup = now + 1.0
             time_to_sleep = next_wakeup - time.monotonic()
             if time_to_sleep > 0:
                 try:
