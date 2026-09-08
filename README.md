@@ -106,21 +106,11 @@ import j1939
 logging.getLogger('j1939').setLevel(logging.DEBUG)
 logging.getLogger('can').setLevel(logging.DEBUG)
 
-def on_message(priority, pgn, sa, timestamp, data):
-    """Receive incoming messages from the bus
-
-    :param int priority:
-        Priority of the message
-    :param int pgn:
-        Parameter Group Number of the message
-    :param int sa:
-        Source Address of the message
-    :param int timestamp:
-        Timestamp of the message
-    :param bytearray data:
-        Data of the PDU
-    """
-    print("PGN {} length {}".format(pgn, len(data)))
+def on_message(msg: j1939.J1939Message):
+    """Receive incoming messages from the bus"""
+    print("PGN {} from {:#04x} to {:#04x}, length {}".format(
+        msg.pgn, msg.source_address, msg.dest_address, len(msg.data)
+    ))
 
 def main():
     print("Initializing")
@@ -149,6 +139,11 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+The legacy 5-argument callback form,
+`on_message(priority, pgn, sa, timestamp, data)` (without the destination
+address), is also still supported and detected automatically from the
+callback's signature — existing subscribers don't need to change.
 
 A more sophisticated example in which the CA class was overloaded to
 include its own functionality:

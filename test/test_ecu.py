@@ -438,6 +438,83 @@ def test_subscribe(feeder):
     assert call_count == 1
 
 
+def test_subscribe_new_style_receives_j1939_message(feeder):
+    """A single-argument callback receives a J1939Message with dest_address."""
+    received = []
+
+    def callback(msg: j1939.J1939Message):
+        received.append(msg)
+
+    feeder.ecu.subscribe(callback)
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, 0x00FEB201, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),
+    ]
+    feeder.pdus = [(Feeder.MsgType.PDU, 65202, [1, 2, 3, 4, 5, 6, 7, 8])]
+    feeder.receive()
+
+    assert len(received) == 1
+    msg = received[0]
+    assert isinstance(msg, j1939.J1939Message)
+    assert msg.pgn == 65202
+    assert msg.source_address == 1
+    assert msg.dest_address == j1939.ParameterGroupNumber.Address.GLOBAL
+    assert list(msg.data) == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_subscribe_new_style_receives_peer_to_peer_dest_address(feeder):
+    """A single-argument callback observes the destination address of a
+    directed (PDU1) message, including when it's not one of this node's own
+    addresses (passive wildcard observation, see #59).
+    """
+    received = []
+
+    def callback(msg: j1939.J1939Message):
+        received.append(msg)
+
+    feeder.ecu.subscribe(callback)
+
+    # Destination-specific (PDU1) single-frame message (PGN 0xDC00, ATS) to a
+    # third node (0x21), not owned by this ECU.
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, 0x00DC2101, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),
+    ]
+    feeder.accept_all_messages()
+    feeder._inject_messages_into_ecu()
+
+    deadline = time.monotonic() + 2.0
+    while not received and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert len(received) == 1
+    assert received[0].dest_address == 0x21
+
+
+def test_subscribe_both_calling_conventions_side_by_side(feeder):
+    """Legacy 5-arg and new J1939Message-style subscribers can coexist."""
+    legacy_calls = []
+    new_calls = []
+
+    def legacy_callback(priority, pgn, sa, timestamp, data):
+        legacy_calls.append((priority, pgn, sa, timestamp, data))
+
+    def new_callback(msg):
+        new_calls.append(msg)
+
+    feeder.ecu.subscribe(legacy_callback)
+    feeder.ecu.subscribe(new_callback)
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, 0x00FEB201, [1, 2, 3, 4, 5, 6, 7, 8], 0.0),
+    ]
+    feeder.pdus = [(Feeder.MsgType.PDU, 65202, [1, 2, 3, 4, 5, 6, 7, 8])]
+    feeder.receive()
+
+    assert len(legacy_calls) == 1
+    assert len(new_calls) == 1
+    assert new_calls[0].pgn == legacy_calls[0][1]
+
+
 def test_remove_ca_cleans_ca_subscriptions_but_preserves_ecu_subscriptions(feeder):
     """Removing a CA removes only subscriptions registered through that CA."""
     received = []
