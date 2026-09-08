@@ -762,3 +762,52 @@ def test_dispatch_queue_drop_on_full():
     finally:
         callback_release.set()  # ensure unblocked even if test fails early
         ecu.stop()
+        # ecu.stop() only warns (rather than failing) if the dispatch thread
+        # doesn't exit within its own dispatch_join_timeout, so explicitly wait
+        # here for all three threads to actually exit before returning. This
+        # avoids racing the (much shorter) thread-leak fixture in conftest.py
+        # against stop()'s own generous join timeout — see #81.
+        for t in (ecu._dispatch_thread, ecu._protocol_thread, ecu._timer_thread):
+            assert _wait_thread_exit(t, timeout=3.0), (
+                f"{t.name} did not exit within 3s of ecu.stop()"
+            )
+
+
+def test_protocol_job_thread_survives_dll_exception():
+    """An exception raised by async_job_thread() must not kill the protocol thread.
+
+    Regression test for #76: a single unguarded exception inside async_job_thread
+    used to fall out of the while loop and terminate _protocol_job_thread silently,
+    permanently stopping all TP/BAM timeout handling for the ECU's lifetime.
+    """
+    ecu = _make_ecu()
+    try:
+        protocol_thread = ecu._protocol_thread
+        assert protocol_thread.is_alive()
+
+        call_count = {"n": 0}
+        real_async_job_thread = ecu.j1939_dll.async_job_thread
+
+        def flaky_async_job_thread(now):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("boom")
+            return real_async_job_thread(now)
+
+        ecu.j1939_dll.async_job_thread = flaky_async_job_thread
+        ecu._protocol_wakeup_queue.put(1)  # wake the thread so it calls in promptly
+
+        deadline = time.monotonic() + 2.0
+        while call_count["n"] < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert call_count["n"] >= 2, (
+            "async_job_thread was not called again after raising — "
+            "protocol thread died instead of continuing"
+        )
+        assert protocol_thread.is_alive(), (
+            "protocol thread exited after an exception in async_job_thread"
+        )
+    finally:
+        ecu.stop()
+        ecu.stop()
