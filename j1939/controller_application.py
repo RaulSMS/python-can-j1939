@@ -38,6 +38,22 @@ class ControllerApplication:
         MAX_16 = 0xFAFF
         MAX_16_ARR = [0xFA, 0xFF]
 
+    @staticmethod
+    def _check_source_address(address):
+        """Validate that ``address`` is a claimable J1939 source address.
+
+        :param int address:
+            A claimable source address in the range 0..253. NULL (254) and
+            GLOBAL (255) are not claimable addresses.
+        :raises ValueError:
+            If ``address`` is outside the 0..253 range.
+        """
+        if address < 0 or address > 253:
+            raise ValueError(
+                f"Invalid source address '{address}': must be in the range 0..253 "
+                "(NULL (254) and GLOBAL (255) are not claimable addresses)"
+            )
+
     def __init__(self, name, device_address_preferred=None, bypass_address_claim=False):
         """
         :param name:
@@ -46,7 +62,12 @@ class ControllerApplication:
             The device_address this CA should claim on the bus.
         :param bypass_address_claim:
             Flag to bypass address claim procedure
+        :raises ValueError:
+            If ``device_address_preferred`` is not ``None`` and is outside the
+            claimable range 0..253.
         """
+        if device_address_preferred is not None:
+            ControllerApplication._check_source_address(device_address_preferred)
         self._name = name
         self._device_address_preferred = device_address_preferred
         if bypass_address_claim and (device_address_preferred is not None):
@@ -358,7 +379,9 @@ class ControllerApplication:
         with self._lifecycle_lock:
             # Only 0..253 are valid (claimable) source addresses. NULL (254)
             # and GLOBAL (255) must never be claimed.
-            if new_address < 0 or new_address > 253:
+            try:
+                ControllerApplication._check_source_address(new_address)
+            except ValueError:
                 logger.warning("Ignoring address claim for invalid source address '%d'", new_address)
                 return False
             if self._ecu is None:
