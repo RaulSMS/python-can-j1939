@@ -6,21 +6,9 @@ import j1939
 logging.getLogger('j1939').setLevel(logging.DEBUG)
 logging.getLogger('can').setLevel(logging.DEBUG)
 
-def on_message(priority, pgn, sa, timestamp, data):
-    """Receive incoming messages from the bus
-
-    :param int priority:
-        Priority of the message
-    :param int pgn:
-        Parameter Group Number of the message
-    :param int sa:
-        Source Address of the message
-    :param int timestamp:
-        Timestamp of the message
-    :param bytearray data:
-        Data of the PDU
-    """
-    print(f"PGN {hex(pgn)} length {len(data)}")
+def on_message(msg: j1939.J1939Message):
+    """Receive incoming messages from the bus"""
+    print(f"PGN {hex(msg.pgn)} to {hex(msg.dest_address)} length {len(msg.data)}")
 
 def main():
     print("Initializing")

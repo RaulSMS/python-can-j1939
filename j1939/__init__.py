@@ -5,6 +5,7 @@ from .Dm14Server import *  # noqa: F403
 from .electronic_control_unit import ElectronicControlUnit as ElectronicControlUnit
 from .error_info import *  # noqa: F403
 from .memory_access import *  # noqa: F403
+from .message import J1939Message as J1939Message
 from .message_id import MessageId as MessageId
 from .name import Name as Name
 from .parameter_group_number import ParameterGroupNumber as ParameterGroupNumber
